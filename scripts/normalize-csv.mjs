@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { readFile, writeFile } from "node:fs/promises";
 
 const controlToken = process.env.INGESTION_CONTROL_TOKEN;
 const workerUrl = process.env.INGESTION_WORKER_URL;
@@ -9,6 +10,7 @@ const fiscalYear = Number(process.env.FISCAL_YEAR);
 const sourceVersion = process.env.SOURCE_VERSION;
 const batchSize = Number(process.env.NORMALIZE_BATCH_SIZE ?? 10);
 const maxRows = Number(process.env.NORMALIZE_MAX_ROWS ?? Number.MAX_SAFE_INTEGER);
+const statePath = process.env.NORMALIZE_STATE_PATH ?? ".bit-gov-normalization-state.json";
 
 if (!controlToken || !workerUrl || !sourceUrl || !runId || !resourceId || !sourceVersion || !Number.isInteger(fiscalYear)) {
   throw new Error("Set INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL, SOURCE_CSV_URL, CAPTURE_RUN_ID, RESOURCE_ID, FISCAL_YEAR and SOURCE_VERSION");
@@ -63,8 +65,19 @@ async function submit(records) {
   }
 }
 
+async function readState() {
+  try { return JSON.parse(await readFile(statePath, "utf8")); }
+  catch (error) { if (error?.code === "ENOENT") return {}; throw error; }
+}
+
+async function writeState(state) {
+  await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
 const response = await fetch(sourceUrl);
 if (!response.ok || !response.body) throw new Error(`source CSV returned HTTP ${response.status}`);
+const state = await readState();
+const resumeFrom = Number(state[runId]?.processedRows ?? 0);
 let headers;
 let batch = [];
 let rowCount = 0;
@@ -74,15 +87,18 @@ let quarantineCount = 0;
 for await (const row of csvRows(response.body)) {
   if (!headers) { headers = row.map((value) => value.replace(/^\uFEFF/, "").trim()); continue; }
   if (row.length !== headers.length) throw new Error(`CSV row ${rowCount + 1} has ${row.length} fields; expected ${headers.length}`);
-  batch.push(Object.fromEntries(headers.map((header, index) => [header, row[index]])));
   rowCount += 1;
-  if (batch.length === batchSize || rowCount >= maxRows) {
+  if (rowCount <= resumeFrom) continue;
+  batch.push(Object.fromEntries(headers.map((header, index) => [header, row[index]])));
+  if (batch.length === batchSize || rowCount - resumeFrom >= maxRows) {
     const result = await submit(batch);
     acceptedCount += result.acceptedCount;
     duplicateCount += result.duplicateCount;
     quarantineCount += result.quarantineCount;
     batch = [];
-    if (rowCount >= maxRows) break;
+    state[runId] = { processedRows: rowCount, updatedAt: new Date().toISOString() };
+    await writeState(state);
+    if (rowCount - resumeFrom >= maxRows) break;
   }
 }
 if (batch.length) {
@@ -90,5 +106,11 @@ if (batch.length) {
   acceptedCount += result.acceptedCount;
   duplicateCount += result.duplicateCount;
   quarantineCount += result.quarantineCount;
+  state[runId] = { processedRows: rowCount, updatedAt: new Date().toISOString() };
+  await writeState(state);
 }
-console.log(JSON.stringify({ runId, rowCount, acceptedCount, duplicateCount, quarantineCount }));
+if (rowCount - resumeFrom < maxRows) {
+  delete state[runId];
+  await writeState(state);
+}
+console.log(JSON.stringify({ runId, rowCount, resumedFrom: resumeFrom, acceptedCount, duplicateCount, quarantineCount }));

@@ -14,6 +14,7 @@ const maxChunks = Number(process.env.MAX_CHUNKS ?? 1);
 // Pace writes conservatively: staging has returned transient 503s after burst R2 uploads.
 const chunkDelayMs = Number(process.env.CHUNK_DELAY_MS ?? 15000);
 const statePath = process.env.CAPTURE_STATE_PATH ?? ".bit-gov-capture-state.json";
+const completedStatePath = process.env.COMPLETED_CAPTURE_STATE_PATH ?? ".bit-gov-completed-captures.json";
 
 if (!apiKey || !controlToken || !workerUrl || years.length !== 2 || years.some((year) => !Number.isInteger(year))) {
   throw new Error("Set DATA_GO_TH_API_KEY, INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL and FISCAL_YEARS=2565:2568");
@@ -131,6 +132,19 @@ async function writeCaptureState(state) {
   await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
+async function readCompletedCaptureState() {
+  try {
+    return JSON.parse(await readFile(completedStatePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return {};
+    throw new Error(`Could not read completed capture state: ${error.message}`);
+  }
+}
+
+async function writeCompletedCaptureState(state) {
+  await writeFile(completedStatePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
 const initialState = process.env.LOCAL_UPLOAD === "1" ? await readCaptureState() : {};
 const activeResourceId = Object.keys(initialState)[0]?.split(":")[1] ?? process.env.RESOURCE_ID ?? null;
 let remainingResources = resourceLimit;
@@ -177,7 +191,15 @@ catalog: for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1
           chunks += 1;
           nextRangeStart = uploaded.nextRangeStart;
           state[stateKey] = { run_id: started.run_id, nextRangeStart, totalBytes: uploaded.totalBytes, chunkBytes: workingChunkBytes, updatedAt: new Date().toISOString() };
-          if (uploaded.finished) delete state[stateKey];
+          if (uploaded.finished) {
+            delete state[stateKey];
+            const completed = await readCompletedCaptureState();
+            completed[stateKey] = {
+              runId: started.run_id, fiscalYear, resourceId: resource.id, sourceVersion: resource.last_modified || resource.hash || "unknown",
+              sourceUrl: resource.url, totalBytes: uploaded.totalBytes, completedAt: new Date().toISOString(), normalizedAt: null,
+            };
+            await writeCompletedCaptureState(completed);
+          }
           await writeCaptureState(state);
           if (uploaded.finished) break;
           await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));

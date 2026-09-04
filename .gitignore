@@ -18,6 +18,8 @@ coverage/
 backups/
 raw/
 .bit-gov-capture-state.json
+.bit-gov-completed-captures.json
+.bit-gov-normalization-state.json
 
 *.log
 .DS_Store
