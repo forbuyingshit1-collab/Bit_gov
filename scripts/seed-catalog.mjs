@@ -45,8 +45,8 @@ function parseContentRange(value) {
   return { start: Number(match[1]), end: Number(match[2]), total: Number(match[3]) };
 }
 
-async function uploadChunk({ runId, fiscalYear, resource, rangeStart }) {
-  const rangeEnd = rangeStart + captureBytes - 1;
+async function uploadChunk({ runId, fiscalYear, resource, rangeStart, chunkBytes }) {
+  const rangeEnd = rangeStart + chunkBytes - 1;
   const source = await fetch(resource.url, { headers: { range: `bytes=${rangeStart}-${rangeEnd}` } });
   if (source.status !== 206) throw new Error(`source range returned HTTP ${source.status}`);
   const range = parseContentRange(source.headers.get("content-range"));
@@ -132,14 +132,24 @@ catalog: for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1
         run_id: remote.id, nextRangeStart: Number(remote.checkpoint || 0),
       } : { run_id: (await seed({ fiscalYear, resource, localUpload: true })).run_id, nextRangeStart: 0 });
       let nextRangeStart = started.nextRangeStart;
+      let workingChunkBytes = started.chunkBytes ?? captureBytes;
       let chunks = 0;
       let uploaded;
       try {
         while (chunks < maxChunks) {
-          uploaded = await uploadChunk({ runId: started.run_id, fiscalYear, resource, rangeStart: nextRangeStart });
+          try {
+            uploaded = await uploadChunk({ runId: started.run_id, fiscalYear, resource, rangeStart: nextRangeStart, chunkBytes: workingChunkBytes });
+          } catch (error) {
+            if (workingChunkBytes > 262144) {
+              workingChunkBytes = Math.max(262144, Math.floor(workingChunkBytes / 2));
+              console.warn(`${fiscalYear}: transient upload failure; reducing chunk to ${workingChunkBytes} bytes`);
+              continue;
+            }
+            throw error;
+          }
           chunks += 1;
           nextRangeStart = uploaded.nextRangeStart;
-          state[stateKey] = { run_id: started.run_id, nextRangeStart, totalBytes: uploaded.totalBytes, updatedAt: new Date().toISOString() };
+          state[stateKey] = { run_id: started.run_id, nextRangeStart, totalBytes: uploaded.totalBytes, chunkBytes: workingChunkBytes, updatedAt: new Date().toISOString() };
           if (uploaded.finished) delete state[stateKey];
           await writeCaptureState(state);
           if (uploaded.finished) break;
