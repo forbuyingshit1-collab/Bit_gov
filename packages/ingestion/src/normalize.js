@@ -1,4 +1,8 @@
 const THAI_DIGITS = "๐๑๒๓๔๕๖๗๘๙";
+const THAI_MONTHS = new Map([
+  ["ม.ค.", 1], ["ก.พ.", 2], ["มี.ค.", 3], ["เม.ย.", 4], ["พ.ค.", 5], ["มิ.ย.", 6],
+  ["ก.ค.", 7], ["ส.ค.", 8], ["ก.ย.", 9], ["ต.ค.", 10], ["พ.ย.", 11], ["ธ.ค.", 12],
+]);
 const ISAN_PROVINCES = new Set([
   "กาฬสินธุ์", "ขอนแก่น", "ชัยภูมิ", "นครพนม", "นครราชสีมา", "บึงกาฬ", "บุรีรัมย์", "มหาสารคาม",
   "มุกดาหาร", "ยโสธร", "ร้อยเอ็ด", "ศรีสะเกษ", "สกลนคร", "สุรินทร์", "หนองคาย", "หนองบัวลำภู",
@@ -21,12 +25,12 @@ const FIELD_ALIASES = {
   department: ["department_name", "หน่วยงานย่อย", "กรม"],
   province: ["province", "จังหวัด"],
   announcementDate: ["announce_date", "วันที่ประกาศ", "วันที่ประกาศผล"],
-  budget: ["budget", "งบประมาณ", "project_budget"],
-  referencePrice: ["reference_price", "ราคากลาง"],
-  agreedPrice: ["agreed_price", "ราคาที่ตกลง", "ราคาตกลง"],
-  contractPrice: ["contract_price", "ราคาสัญญา"],
+  budget: ["budget", "งบประมาณ", "งบประมาณ(บาท)", "project_budget"],
+  referencePrice: ["reference_price", "ราคากลาง", "ราคากลาง(บาท)"],
+  agreedPrice: ["agreed_price", "ราคาที่ตกลง", "ราคาตกลง", "ราคาตกลงซื้อ/จ้าง"],
+  contractPrice: ["contract_price", "ราคาสัญญา", "งบสัญญา(บาท)"],
   contractNumber: ["contract_number", "เลขที่สัญญา"],
-  contractDate: ["contract_date", "วันที่ทำสัญญา"],
+  contractDate: ["contract_date", "วันที่ทำสัญญา", "วันที่ลงนามสัญญา"],
   supplier: ["supplier_name", "ชื่อผู้ชนะ", "ผู้ชนะ", "คู่สัญญา"],
   supplierTaxId: ["supplier_tax_id", "เลขนิติบุคคล", "เลขประจำตัวผู้เสียภาษี"],
 };
@@ -50,6 +54,16 @@ export function toSatang(value) {
 
 export function thaiDateToIso(value) {
   const text = normalizeText(value).replace(/\//g, "-");
+  const thaiMonthMatch = /^(\d{1,2})\s+([^\s]+)\s+(\d{2,4})$/.exec(text);
+  if (thaiMonthMatch && THAI_MONTHS.has(thaiMonthMatch[2])) {
+    const [, day, thaiMonth, year] = thaiMonthMatch;
+    let numericYear = Number(year);
+    if (numericYear > 2400) numericYear -= 543;
+    if (numericYear < 100) numericYear += 2000;
+    const month = String(THAI_MONTHS.get(thaiMonth)).padStart(2, "0");
+    const iso = `${numericYear}-${month}-${day.padStart(2, "0")}`;
+    return Number.isNaN(Date.parse(`${iso}T00:00:00Z`)) ? null : iso;
+  }
   const match = /^(\d{1,2})-(\d{1,2})-(\d{2,4})$/.exec(text);
   if (!match) return null;
   let [, day, month, year] = match;
