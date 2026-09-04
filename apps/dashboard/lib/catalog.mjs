@@ -1,4 +1,5 @@
-export const CKAN_ACTION_URL = "https://data.go.th/api/3/action";
+// The API-key gateway is the supported machine-to-machine CKAN endpoint.
+export const CKAN_ACTION_URL = "https://opend.data.go.th/get-ckan";
 
 export function fiscalYearDatasetTitle(fiscalYear) {
   return `ข้อมูลโครงการจัดซื้อจัดจ้างจากระบบการจัดซื้อจัดจ้างภาครัฐ ปีงบประมาณ ${fiscalYear}`;
