@@ -88,6 +88,16 @@ async function loadCompanyWork(filters) {
   } catch { return { totals: {}, items: [] }; }
 }
 
+async function loadRecommendations(filters) {
+  if (!apiUrl) return { items: [] };
+  const url = new URL("/v1/recommendations", apiUrl);
+  if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    return response.ok ? response.json() : { items: [] };
+  } catch { return { items: [] }; }
+}
+
 export default async function Home({ searchParams }) {
   const cookieStore = await cookies();
   if (!verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value)) redirect("/login");
@@ -100,7 +110,7 @@ export default async function Home({ searchParams }) {
     minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
     sort: params.sort === "oldest" ? "oldest" : "newest",
   };
-  const [status, projects, market, companyWork] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters)]);
+  const [status, projects, market, companyWork, recommended] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters)]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
   const exportParams = new URLSearchParams();
@@ -120,7 +130,7 @@ export default async function Home({ searchParams }) {
         <div className="header-actions"><span className={`status ${ready ? "ready" : "pending"}`}>{ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}</span><form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form></div>
       </header>
 
-      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#results">รายการโครงการ</a><a href="#company-work">ผลงานบริษัท</a></nav>
+      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#recommended">โครงการแนะนำ</a><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#company-work">ผลงานบริษัท</a></nav>
 
       <section id="overview" className="metrics" aria-label="ภาพรวมข้อมูล">
         <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
@@ -131,6 +141,11 @@ export default async function Home({ searchParams }) {
       <section className="charts" aria-label="กราฟสรุปตลาด">
         <BarChart title="งบประมาณตามหมวดสินค้า" rows={market.categories} />
         <BarChart title="งบประมาณตามจังหวัด" rows={market.provinces} tone="green" />
+      </section>
+
+      <section id="recommended" className="results-section recommended-section">
+        <div className="section-heading"><div><h2>โครงการแนะนำ</h2><p>ให้คะแนนจากความคล้ายกับผลงานบริษัทในอดีต ไม่ใช่การยืนยันว่ายังเปิดรับข้อเสนอ</p></div></div>
+        {recommended.items?.length ? <div className="recommendation-grid">{recommended.items.slice(0, 6).map((item)=><article className="recommendation-card" key={item.id}><div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}% · โอกาส{item.opportunity_level}</div><h3>{item.title}</h3><p>{item.agency_name || "ไม่ระบุหน่วยงาน"} · {item.province || "ไม่ระบุจังหวัด"}</p><div className="project-tags"><span>{item.category}</span>{item.subcategory ? <span>{item.subcategory}</span> : null}<span>{money(item.budget_sat)}</span></div></article>)}</div> : <div className="empty-state"><strong>กำลังสร้างฐานเปรียบเทียบ</strong><span>คำแนะนำจะเริ่มแสดงเมื่อมีทั้งประวัติบริษัทและโครงการตลาดใน D1</span></div>}
       </section>
 
       <section id="search" className="filter-panel">

@@ -139,6 +139,34 @@ async function companyWork(db, url) {
   return { totals: totals ?? { project_count: 0, winning_price_sat: 0, company_count: 0 }, items: items.results ?? [] };
 }
 
+async function recommendations(db, url) {
+  const companyNames = ["ไอคิวโอเอ โซลูชั่น", "ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี"];
+  const selectedProvinces = provinces(url.searchParams.get("provinces"));
+  const provinceClause = selectedProvinces.length ? `AND p.province IN (${selectedProvinces.map(() => "?").join(",")})` : "";
+  const values = [...companyNames, ...selectedProvinces];
+  const result = await db.prepare(
+    `WITH company_projects AS (
+       SELECT DISTINCT cp.id, cp.agency_name, cp.province,
+         (SELECT category FROM product_matches x WHERE x.project_id = cp.id LIMIT 1) AS category
+       FROM projects cp JOIN awards ca ON ca.project_id = cp.id JOIN suppliers cs ON cs.id = ca.supplier_id
+       WHERE cs.normalized_name IN (?, ?)
+     ), candidates AS (
+       SELECT p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
+         p.budget_sat, pm.category, pm.subcategory,
+         30
+         + 25 * EXISTS (SELECT 1 FROM company_projects h WHERE h.category = pm.category)
+         + 20 * EXISTS (SELECT 1 FROM company_projects h WHERE h.province = p.province)
+         + 15 * EXISTS (SELECT 1 FROM company_projects h WHERE h.agency_name = p.agency_name) AS opportunity_score
+       FROM projects p JOIN product_matches pm ON pm.project_id = p.id
+       WHERE pm.decision_status IN ('auto_approved', 'approved') ${provinceClause}
+         AND NOT EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.normalized_name IN (?, ?))
+     )
+     SELECT *, CASE WHEN opportunity_score >= 75 THEN 'สูง' WHEN opportunity_score >= 50 THEN 'กลาง' ELSE 'ต่ำ' END AS opportunity_level
+     FROM candidates ORDER BY opportunity_score DESC, announcement_date_iso DESC LIMIT 25`,
+  ).bind(...values, ...companyNames).all();
+  return { methodology: "historical_similarity_v1", warning: "historical_record_not_open_tender_confirmation", items: result.results ?? [] };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -172,6 +200,9 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/company-work") {
       return json(await companyWork(env.DB, url));
+    }
+    if (request.method === "GET" && url.pathname === "/v1/recommendations") {
+      return json(await recommendations(env.DB, url));
     }
 
     return json({ error: "not_found" }, 404);
