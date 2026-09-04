@@ -10,6 +10,11 @@ export default {
         ok: true,
         service: "bit-gov-ingestion",
         environment: env.APP_ENV,
+        bindings: {
+          database: Boolean(env.DB),
+          rawBucket: Boolean(env.RAW_BUCKET),
+          queue: Boolean(env.INGESTION_QUEUE),
+        },
       });
     }
     return Response.json({ error: "not_found" }, { status: 404 });

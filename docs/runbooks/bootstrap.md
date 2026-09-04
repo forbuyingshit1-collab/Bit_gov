@@ -25,7 +25,7 @@ Do not run database migrations, start ingestion or deploy production before reso
 
 - D1 `bit-gov-staging`: created and migrated 4 September 2026 (APAC); 21 tables and 7 views verified
 - Queue `bit-gov-ingestion-staging`: created 4 September 2026; consumer is not deployed yet
-- R2 `bit-gov-raw-staging`: waiting for the account owner to enable R2 billing
+- R2 `bit-gov-raw-staging`: created 4 September 2026; ingestion binding configured
 - API Worker `bit-gov-api-staging`: deployed; first-time `workers.dev` TLS/DNS activation pending verification
 - Vercel `bit-gov-dashboard`: project linked and Preview deployed from CLI
 - Git auto-deploy: waiting for the Vercel GitHub App to be granted access to `forbuyingshit1-collab/Bit_gov`
