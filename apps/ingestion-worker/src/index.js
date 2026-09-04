@@ -155,6 +155,45 @@ async function handleCatalogSync(message, env) {
   }
 }
 
+async function seedCatalogResource({ fiscalYear, resource, testMode = false, chunkBytes, stopAfterChunk }, env) {
+  assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+  if (!resource || typeof resource.id !== "string") throw new Error("seed resource id is required");
+  const resourceUrl = validatedResourceUrl(resource.url);
+  const now = new Date().toISOString();
+  const resourceDbId = `ckan:${resource.id}`;
+  const runId = crypto.randomUUID();
+  const sourceVersion = resource.last_modified || resource.hash || "unknown";
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO sources (id, name, source_type, base_url, enabled, created_at)
+       VALUES (?, ?, 'ckan', ?, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET enabled = 1`,
+    ).bind(SOURCE_ID, "Data.go.th CKAN", "https://opend.data.go.th/get-ckan", now),
+    env.DB.prepare(
+      `INSERT INTO source_resources
+         (id, source_id, external_id, fiscal_year, resource_url, source_last_modified,
+          checksum, schema_fingerprint, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+       ON CONFLICT(source_id, external_id) DO UPDATE SET
+         fiscal_year = excluded.fiscal_year, resource_url = excluded.resource_url,
+         source_last_modified = excluded.source_last_modified, checksum = excluded.checksum,
+         last_seen_at = excluded.last_seen_at`,
+    ).bind(resourceDbId, SOURCE_ID, resource.id, fiscalYear, resourceUrl, resource.last_modified ?? null, resource.hash || null, now, now),
+    env.DB.prepare(
+      `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at,
+        source_count, accepted_count, duplicate_count, quarantine_count, checkpoint)
+       VALUES (?, ?, ?, 'running', ?, 0, 0, 0, 0, '0')`,
+    ).bind(runId, resourceDbId, testMode ? "smoke_capture" : "raw_capture", now),
+  ]);
+  await env.INGESTION_QUEUE.send({
+    type: "capture_csv_range", runId, resourceDbId, resourceId: resource.id, resourceUrl,
+    fiscalYear, sourceVersion, rangeStart: 0,
+    chunkBytes: chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
+    stopAfterChunk: stopAfterChunk === true, schemaVersion: 1,
+  });
+  return runId;
+}
+
 function csvChunkKey(message, rangeStart, rangeEnd) {
   const version = String(message.sourceVersion).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
   return `raw/source-csv/${message.fiscalYear}/${message.resourceId}/${version}/bytes-${rangeStart}-${rangeEnd}.csv`;
@@ -366,6 +405,16 @@ export default {
         schemaVersion: 1,
       });
       return Response.json({ queued: true, mode: "smoke", rowsAtMost: 10 }, { status: 202 });
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/seed-catalog-resource") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      const body = await request.json();
+      const runId = await seedCatalogResource(body, env);
+      return Response.json({ queued: true, run_id: runId }, { status: 202 });
     }
 
     if (request.method === "POST" && url.pathname === "/internal/public-source-probe") {
