@@ -643,6 +643,20 @@ export default {
       }
     }
 
+    if (request.method === "POST" && url.pathname === "/internal/fail-capture") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      const body = await request.json();
+      if (typeof body.runId !== "string") return Response.json({ error: "run_id_required" }, { status: 400 });
+      await env.DB.prepare(
+        `UPDATE sync_runs SET status = 'failed', finished_at = ?, error_summary = ?
+          WHERE id = ? AND run_type = 'local_raw_capture' AND status = 'running'`,
+      ).bind(new Date().toISOString(), String(body.reason ?? "local_upload_failed").slice(0, 500), body.runId).run();
+      return Response.json({ updated: true });
+    }
+
     if (request.method === "POST" && url.pathname === "/internal/public-source-probe") {
       const authorized = await secureTokenEqual(
         request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""),

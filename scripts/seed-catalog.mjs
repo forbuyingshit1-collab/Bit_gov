@@ -74,6 +74,14 @@ async function uploadChunk({ runId, fiscalYear, resource, rangeStart }) {
   }
 }
 
+async function failCapture(runId, reason) {
+  await fetch(`${workerUrl.replace(/\/$/, "")}/internal/fail-capture`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
+    body: JSON.stringify({ runId, reason }),
+  });
+}
+
 async function readCaptureState() {
   try {
     return JSON.parse(await readFile(statePath, "utf8"));
@@ -105,15 +113,20 @@ for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
       let nextRangeStart = started.nextRangeStart;
       let chunks = 0;
       let uploaded;
-      while (chunks < maxChunks) {
-        uploaded = await uploadChunk({ runId: started.run_id, fiscalYear, resource, rangeStart: nextRangeStart });
-        chunks += 1;
-        nextRangeStart = uploaded.nextRangeStart;
-        state[stateKey] = { run_id: started.run_id, nextRangeStart, totalBytes: uploaded.totalBytes, updatedAt: new Date().toISOString() };
-        if (uploaded.finished) delete state[stateKey];
-        await writeCaptureState(state);
-        if (uploaded.finished) break;
-        await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));
+      try {
+        while (chunks < maxChunks) {
+          uploaded = await uploadChunk({ runId: started.run_id, fiscalYear, resource, rangeStart: nextRangeStart });
+          chunks += 1;
+          nextRangeStart = uploaded.nextRangeStart;
+          state[stateKey] = { run_id: started.run_id, nextRangeStart, totalBytes: uploaded.totalBytes, updatedAt: new Date().toISOString() };
+          if (uploaded.finished) delete state[stateKey];
+          await writeCaptureState(state);
+          if (uploaded.finished) break;
+          await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));
+        }
+      } catch (error) {
+        await failCapture(started.run_id, error.message);
+        throw error;
       }
       console.log(`${fiscalYear}: ${uploaded.finished ? "completed" : "checkpointed"} ${resource.id} (${chunks} local-upload chunk, run ${started.run_id})`);
       continue;
