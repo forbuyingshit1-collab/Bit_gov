@@ -37,7 +37,7 @@ function provinces(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 20);
 }
 
-async function searchProjects(db, url) {
+async function searchProjects(db, url, maximumLimit = 100) {
   const where = [];
   const values = [];
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
@@ -62,7 +62,7 @@ async function searchProjects(db, url) {
   const maxPrice = Number(url.searchParams.get("maxPriceSat"));
   if (Number.isSafeInteger(maxPrice) && maxPrice >= 0) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) <= ?"); values.push(maxPrice); }
   const direction = url.searchParams.get("sort") === "oldest" ? "ASC" : "DESC";
-  const limit = positiveInteger(url.searchParams.get("limit"), 25, 100);
+  const limit = positiveInteger(url.searchParams.get("limit"), 25, maximumLimit);
   const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
   const predicate = where.length ? `WHERE ${where.join(" AND ")}` : "";
   const base = `FROM projects p ${predicate}`;
@@ -76,6 +76,20 @@ async function searchProjects(db, url) {
      ${base} ORDER BY p.announcement_date_iso ${direction}, p.id ${direction} LIMIT ? OFFSET ?`,
   ).bind(...values, limit, offset).all();
   return { total: count?.count ?? 0, limit, offset, items: result.results ?? [] };
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function projectCsv(items) {
+  const headers = ["รหัสโครงการ", "ชื่อโครงการ", "หน่วยงาน", "จังหวัด", "ปีงบประมาณ", "วันที่ประกาศ", "หมวดสินค้า", "งบประมาณ(บาท)", "ราคากลาง(บาท)", "ราคาชนะ(บาท)", "ผู้ชนะ"];
+  const rows = items.map((item) => [item.project_code, item.title, item.agency_name, item.province, item.fiscal_year,
+    item.announcement_date_iso, item.category, item.budget_sat == null ? "" : item.budget_sat / 100,
+    item.reference_price_sat == null ? "" : item.reference_price_sat / 100,
+    item.winning_price_sat == null ? "" : item.winning_price_sat / 100, item.winner_name]);
+  return `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
 }
 
 export default {
@@ -92,6 +106,18 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/v1/projects") {
       return json(await searchProjects(env.DB, url));
+    }
+
+    if (request.method === "GET" && url.pathname === "/v1/export/projects.csv") {
+      url.searchParams.set("limit", "5000");
+      url.searchParams.set("offset", "0");
+      const projects = await searchProjects(env.DB, url, 5000);
+      return new Response(projectCsv(projects.items), { headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": "attachment; filename=bit-gov-projects.csv",
+        "cache-control": "no-store",
+        "x-content-type-options": "nosniff",
+      } });
     }
 
     return json({ error: "not_found" }, 404);

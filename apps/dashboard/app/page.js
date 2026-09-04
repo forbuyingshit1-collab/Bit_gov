@@ -62,6 +62,14 @@ export default async function Home({ searchParams }) {
   const [status, projects] = await Promise.all([loadStatus(), loadProjects(filters)]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
+  const exportParams = new URLSearchParams();
+  if (filters.q) exportParams.set("q", filters.q);
+  if (filters.provinces.length) exportParams.set("provinces", filters.provinces.join(","));
+  if (filters.fiscalYear) exportParams.set("fiscalYear", filters.fiscalYear);
+  if (filters.category) exportParams.set("category", filters.category);
+  if (filters.minPrice) exportParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
+  if (filters.maxPrice) exportParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
+  exportParams.set("sort", filters.sort);
 
   return (
     <main>
@@ -93,7 +101,7 @@ export default async function Home({ searchParams }) {
       </section>
 
       <section id="results" className="results-section">
-        <div className="section-heading"><div><h2>พบ {number(projects.total)} โครงการ</h2><p>รายการที่ระบบค้นพบ ไม่ได้ยืนยันว่ายังเปิดรับข้อเสนอ กรุณาตรวจสอบกับ e-GP ก่อนดำเนินการ</p></div></div>
+        <div className="section-heading"><div><h2>พบ {number(projects.total)} โครงการ</h2><p>รายการที่ระบบค้นพบ ไม่ได้ยืนยันว่ายังเปิดรับข้อเสนอ กรุณาตรวจสอบกับ e-GP ก่อนดำเนินการ</p></div><a className="secondary" href={`/api/export/projects?${exportParams}`}>ดาวน์โหลด CSV</a></div>
         {projects.items?.length ? <div className="project-list">{projects.items.map((project)=><article className="project-card" key={project.id}>
           <div className="project-tags"><span>{project.province || "ไม่ระบุจังหวัด"}</span>{project.category ? <span>{project.category}</span> : null}<span>ปี {project.fiscal_year}</span></div>
           <h3>{project.title}</h3><p>{project.agency_name || "ไม่ระบุหน่วยงาน"}</p>
