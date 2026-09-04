@@ -104,16 +104,21 @@ async function writeCaptureState(state) {
   await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
+const initialState = process.env.LOCAL_UPLOAD === "1" ? await readCaptureState() : {};
+const activeResourceId = Object.keys(initialState)[0]?.split(":")[1] ?? process.env.RESOURCE_ID ?? null;
+let remainingResources = resourceLimit;
+
+catalog: for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
   const title = titleFor(fiscalYear);
   const search = await ckan("package_search", { q: title, rows: 20 });
   const dataset = (search.results ?? []).find((item) => item.title === title);
   if (!dataset) { console.log(`${fiscalYear}: unavailable`); continue; }
   const detail = await ckan("package_show", { id: dataset.id });
-  const resources = (detail.resources ?? []).filter((resource) =>
+  const discoveredResources = (detail.resources ?? []).filter((resource) =>
     String(resource.format ?? "").toUpperCase() === "CSV" && resource.datastore_active === true && typeof resource.url === "string",
   );
-  for (const resource of resources.slice(0, resourceLimit)) {
+  const resources = activeResourceId ? discoveredResources.filter((resource) => resource.id === activeResourceId) : discoveredResources;
+  for (const resource of resources) {
     if (process.env.LOCAL_UPLOAD === "1") {
       const state = await readCaptureState();
       const stateKey = `${fiscalYear}:${resource.id}:${resource.last_modified || resource.hash || "unknown"}`;
@@ -145,6 +150,8 @@ for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
         throw error;
       }
       console.log(`${fiscalYear}: ${uploaded.finished ? "completed" : "checkpointed"} ${resource.id} (${chunks} local-upload chunk, run ${started.run_id})`);
+      remainingResources -= 1;
+      if (remainingResources <= 0) break catalog;
       continue;
     }
     const direct = process.env.DIRECT === "1";
@@ -156,5 +163,7 @@ for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
       chunks += 1;
     }
     console.log(`${fiscalYear}: ${result.capture?.finished ? "completed" : "checkpointed"} ${resource.id} (${chunks} chunk)`);
+    remainingResources -= 1;
+    if (remainingResources <= 0) break catalog;
   }
 }
