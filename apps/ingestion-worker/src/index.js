@@ -238,7 +238,7 @@ async function handleCaptureCsvRange(message, env) {
   }
 
   const finished = range.end + 1 >= range.total;
-  const status = finished ? "succeeded" : message.stopAfterChunk ? "partial" : "running";
+  const status = finished ? "succeeded" : (message.stopAfterChunk || message.direct) ? "partial" : "running";
   const now = new Date().toISOString();
   await env.DB.prepare(
     `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? IN ('succeeded', 'partial') THEN ? ELSE NULL END,
@@ -426,15 +426,22 @@ export default {
       if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
       const body = await request.json();
       if (typeof body.runId === "string") {
-        const resourceUrl = validatedResourceUrl(body.resource?.url);
-        const capture = await handleCaptureCsvRange({
-          type: "capture_csv_range", runId: body.runId, resourceDbId: `ckan:${body.resource.id}`,
-          resourceId: body.resource.id, resourceUrl, fiscalYear: body.fiscalYear,
-          sourceVersion: body.resource.last_modified || body.resource.hash || "unknown",
-          rangeStart: body.rangeStart, chunkBytes: body.chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
-          stopAfterChunk: body.stopAfterChunk === true, direct: true, schemaVersion: 1,
-        }, env);
-        return Response.json({ queued: false, run_id: body.runId, capture }, { status: 200 });
+        try {
+          const resourceUrl = validatedResourceUrl(body.resource?.url);
+          const capture = await handleCaptureCsvRange({
+            type: "capture_csv_range", runId: body.runId, resourceDbId: `ckan:${body.resource.id}`,
+            resourceId: body.resource.id, resourceUrl, fiscalYear: body.fiscalYear,
+            sourceVersion: body.resource.last_modified || body.resource.hash || "unknown",
+            rangeStart: body.rangeStart, chunkBytes: body.chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
+            stopAfterChunk: body.stopAfterChunk === true, direct: true, schemaVersion: 1,
+          }, env);
+          return Response.json({ queued: false, run_id: body.runId, capture }, { status: 200 });
+        } catch (error) {
+          await env.DB.prepare(
+            "UPDATE sync_runs SET status = 'failed', finished_at = ?, error_summary = ? WHERE id = ?",
+          ).bind(new Date().toISOString(), String(error).slice(0, 500), body.runId).run();
+          return Response.json({ error: "capture_failed" }, { status: 503 });
+        }
       }
       const result = await seedCatalogResource(body, env);
       return Response.json({ queued: !body.direct, run_id: result.runId, capture: result.capture ?? null }, { status: 202 });
