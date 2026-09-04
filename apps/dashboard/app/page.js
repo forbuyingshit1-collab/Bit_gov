@@ -23,6 +23,21 @@ function thaiDate(value) {
   return new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeZone: "Asia/Bangkok" }).format(new Date(`${value}T00:00:00Z`));
 }
 
+function shortMoney(satang) {
+  const baht = (satang ?? 0) / 100;
+  if (baht >= 1_000_000_000) return `${(baht / 1_000_000_000).toFixed(1)} พันล้าน`;
+  if (baht >= 1_000_000) return `${(baht / 1_000_000).toFixed(1)} ล้าน`;
+  return new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 }).format(baht);
+}
+
+function BarChart({ title, rows, tone = "blue" }) {
+  const maximum = Math.max(1, ...rows.map((row) => row.budget_sat ?? 0));
+  return <article className="chart-card"><h2>{title}</h2>{rows.length ? <div className="bar-chart">{rows.slice(0, 8).map((row) => <div className="bar-row" key={row.label ?? "unknown"}>
+    <div className="bar-label"><span>{row.label || "ไม่ระบุ"}</span><strong>{number(row.project_count)} โครงการ · {shortMoney(row.budget_sat)} บาท</strong></div>
+    <div className="bar-track"><span className={tone} style={{ width: `${Math.max(3, ((row.budget_sat ?? 0) / maximum) * 100)}%` }} /></div>
+  </div>)}</div> : <div className="chart-empty">กราฟจะแสดงเมื่อข้อมูลชุดแรกพร้อม</div>}</article>;
+}
+
 async function loadStatus() {
   if (!apiUrl) return { state: "not_configured", totals: {} };
   try {
@@ -47,6 +62,18 @@ async function loadProjects(filters) {
   } catch { return { total: 0, items: [], unavailable: true }; }
 }
 
+async function loadMarket(filters) {
+  if (!apiUrl) return { categories: [], provinces: [], months: [] };
+  const url = new URL("/v1/market-summary", apiUrl);
+  if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
+  if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
+  if (filters.category) url.searchParams.set("category", filters.category);
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    return response.ok ? response.json() : { categories: [], provinces: [], months: [] };
+  } catch { return { categories: [], provinces: [], months: [] }; }
+}
+
 export default async function Home({ searchParams }) {
   const cookieStore = await cookies();
   if (!verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value)) redirect("/login");
@@ -59,7 +86,7 @@ export default async function Home({ searchParams }) {
     minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
     sort: params.sort === "oldest" ? "oldest" : "newest",
   };
-  const [status, projects] = await Promise.all([loadStatus(), loadProjects(filters)]);
+  const [status, projects, market] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters)]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
   const exportParams = new URLSearchParams();
@@ -84,6 +111,11 @@ export default async function Home({ searchParams }) {
         <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
         <article><span>สัญญา</span><strong>{number(totals.contracts)}</strong><small>พร้อมวิเคราะห์ผู้ชนะและราคา</small></article>
         <article><span>รายการต้องตรวจ</span><strong>{number(totals.unresolved_errors)}</strong><small>ไม่นำมาปะปนในรายงานหลัก</small></article>
+      </section>
+
+      <section className="charts" aria-label="กราฟสรุปตลาด">
+        <BarChart title="งบประมาณตามหมวดสินค้า" rows={market.categories} />
+        <BarChart title="งบประมาณตามจังหวัด" rows={market.provinces} tone="green" />
       </section>
 
       <section id="search" className="filter-panel">

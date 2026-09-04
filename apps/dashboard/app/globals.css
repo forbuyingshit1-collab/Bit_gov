@@ -37,6 +37,17 @@ h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); line-height: 1.15; }
 .metrics span { font-size: 17px; font-weight: 700; }
 .metrics strong { margin: 18px 0 8px; font-size: 40px; }
 .metrics small { color: #607287; font-size: 15px; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; margin-top: 24px; }
+.chart-card { min-height: 300px; padding: 23px; border: 1px solid #d3deea; border-radius: 18px; background: white; box-shadow: 0 5px 18px rgba(20, 50, 80, .04); }
+.chart-card h2 { margin: 0 0 20px; font-size: 21px; }
+.bar-chart { display: grid; gap: 15px; }
+.bar-row { display: grid; gap: 7px; }
+.bar-label { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; }
+.bar-label strong { color: #536981; font-weight: 400; text-align: right; }
+.bar-track { height: 13px; overflow: hidden; border-radius: 999px; background: #edf2f7; }
+.bar-track span { display: block; height: 100%; border-radius: inherit; background: #2476b8; }
+.bar-track span.green { background: #318d61; }
+.chart-empty { display: grid; min-height: 210px; place-items: center; color: #64778b; text-align: center; }
 
 .next { margin-top: 24px; padding: 24px 28px; }
 .next h2 { margin: 0 0 18px; font-size: 24px; }
@@ -89,6 +100,7 @@ h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); line-height: 1.15; }
   main { padding-top: 28px; }
   header { flex-direction: column; }
   .metrics { grid-template-columns: 1fr; }
+  .charts { grid-template-columns: 1fr; }
   .metrics article { min-height: 140px; }
   .header-actions { justify-content: flex-start; }
   .filters { grid-template-columns: 1fr; }

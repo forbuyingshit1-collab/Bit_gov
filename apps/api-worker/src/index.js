@@ -92,6 +92,24 @@ function projectCsv(items) {
   return `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
 }
 
+async function marketSummary(db, url) {
+  const where = ["pm.decision_status IN ('auto_approved', 'approved')"];
+  const values = [];
+  const selectedProvinces = provinces(url.searchParams.get("provinces"));
+  if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
+  const fiscalYear = Number(url.searchParams.get("fiscalYear"));
+  if (Number.isInteger(fiscalYear)) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
+  const category = url.searchParams.get("category")?.trim();
+  if (category) { where.push("pm.category = ?"); values.push(category); }
+  const predicate = `WHERE ${where.join(" AND ")}`;
+  const [categories, provinceRows, months] = await Promise.all([
+    db.prepare(`SELECT pm.category AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} GROUP BY pm.category ORDER BY budget_sat DESC`).bind(...values).all(),
+    db.prepare(`SELECT p.province AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} GROUP BY p.province ORDER BY budget_sat DESC LIMIT 20`).bind(...values).all(),
+    db.prepare(`SELECT substr(p.announcement_date_iso, 1, 7) AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} AND p.announcement_date_iso IS NOT NULL GROUP BY substr(p.announcement_date_iso, 1, 7) ORDER BY label`).bind(...values).all(),
+  ]);
+  return { categories: categories.results ?? [], provinces: provinceRows.results ?? [], months: months.results ?? [] };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -118,6 +136,10 @@ export default {
         "cache-control": "no-store",
         "x-content-type-options": "nosniff",
       } });
+    }
+
+    if (request.method === "GET" && url.pathname === "/v1/market-summary") {
+      return json(await marketSummary(env.DB, url));
     }
 
     return json({ error: "not_found" }, 404);
