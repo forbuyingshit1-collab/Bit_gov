@@ -19,6 +19,19 @@ async function ckan(action, params) {
   return payload.result;
 }
 
+async function seed(payload) {
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const response = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/seed-catalog-resource`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (response.ok) return;
+    if (response.status < 500 || attempt === 3) throw new Error(`worker seed returned HTTP ${response.status}`);
+    await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+  }
+}
+
 for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
   const title = titleFor(fiscalYear);
   const search = await ckan("package_search", { q: title, rows: 20 });
@@ -29,12 +42,7 @@ for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
     String(resource.format ?? "").toUpperCase() === "CSV" && resource.datastore_active === true && typeof resource.url === "string",
   );
   for (const resource of resources.slice(0, resourceLimit)) {
-    const response = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/seed-catalog-resource`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ fiscalYear, resource, direct: process.env.DIRECT === "1", stopAfterChunk: process.env.SMOKE === "1", chunkBytes: process.env.SMOKE === "1" ? 1024 * 1024 : undefined }),
-    });
-    if (!response.ok) throw new Error(`worker seed returned HTTP ${response.status}`);
+    await seed({ fiscalYear, resource, direct: process.env.DIRECT === "1", stopAfterChunk: process.env.SMOKE === "1", chunkBytes: process.env.SMOKE === "1" ? 1024 * 1024 : undefined });
     console.log(`${fiscalYear}: queued ${resource.id}`);
   }
 }

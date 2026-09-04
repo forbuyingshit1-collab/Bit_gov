@@ -191,8 +191,16 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
     chunkBytes: chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
     stopAfterChunk: stopAfterChunk === true, schemaVersion: 1,
   };
-  if (direct) await handleCaptureCsvRange(captureMessage, env);
-  else await env.INGESTION_QUEUE.send(captureMessage);
+  if (direct) {
+    try {
+      await handleCaptureCsvRange(captureMessage, env);
+    } catch (error) {
+      await env.DB.prepare(
+        "UPDATE sync_runs SET status = 'failed', finished_at = ?, error_summary = ? WHERE id = ?",
+      ).bind(new Date().toISOString(), String(error).slice(0, 500), runId).run();
+      throw error;
+    }
+  } else await env.INGESTION_QUEUE.send(captureMessage);
   return runId;
 }
 
