@@ -6,75 +6,99 @@ import { logoutAction } from "./login/actions";
 import { SESSION_COOKIE, verifySessionToken } from "../lib/session.mjs";
 
 const apiUrl = process.env.BIT_GOV_API_URL;
+const ISAN_PROVINCES = [
+  "กาฬสินธุ์", "ขอนแก่น", "ชัยภูมิ", "นครพนม", "นครราชสีมา", "บึงกาฬ", "บุรีรัมย์", "มหาสารคาม", "มุกดาหาร", "ยโสธร",
+  "ร้อยเอ็ด", "ศรีสะเกษ", "สกลนคร", "สุรินทร์", "หนองคาย", "หนองบัวลำภู", "อำนาจเจริญ", "อุดรธานี", "อุบลราชธานี", "เลย",
+];
+const CATEGORIES = ["เครื่องพิมพ์", "จอ LED", "จอ Interactive", "ระบบเสียงและแสง", "ความปลอดภัย"];
+
+function list(value) { return Array.isArray(value) ? value : value ? [value] : []; }
+function number(value) { return new Intl.NumberFormat("th-TH").format(value ?? 0); }
+function money(satang) {
+  if (satang === null || satang === undefined) return "ไม่ระบุ";
+  return new Intl.NumberFormat("th-TH", { style: "currency", currency: "THB", maximumFractionDigits: 0 }).format(satang / 100);
+}
+function thaiDate(value) {
+  if (!value) return "ไม่ระบุวันที่";
+  return new Intl.DateTimeFormat("th-TH", { dateStyle: "medium", timeZone: "Asia/Bangkok" }).format(new Date(`${value}T00:00:00Z`));
+}
 
 async function loadStatus() {
-  if (!apiUrl) return { state: "not_configured" };
+  if (!apiUrl) return { state: "not_configured", totals: {} };
   try {
     const response = await fetch(`${apiUrl}/v1/status`, { cache: "no-store" });
-    if (!response.ok) return { state: "unavailable" };
-    return { state: "ready", ...(await response.json()) };
-  } catch {
-    return { state: "unavailable" };
-  }
+    return response.ok ? { state: "ready", ...(await response.json()) } : { state: "unavailable", totals: {} };
+  } catch { return { state: "unavailable", totals: {} }; }
 }
 
-function number(value) {
-  return new Intl.NumberFormat("th-TH").format(value ?? 0);
+async function loadProjects(filters) {
+  if (!apiUrl) return { total: 0, items: [] };
+  const url = new URL("/v1/projects", apiUrl);
+  if (filters.q) url.searchParams.set("q", filters.q);
+  if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
+  if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
+  if (filters.category) url.searchParams.set("category", filters.category);
+  if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
+  if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
+  url.searchParams.set("sort", filters.sort);
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    return response.ok ? response.json() : { total: 0, items: [], unavailable: true };
+  } catch { return { total: 0, items: [], unavailable: true }; }
 }
 
-export default async function Home() {
+export default async function Home({ searchParams }) {
   const cookieStore = await cookies();
   if (!verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value)) redirect("/login");
-  const status = await loadStatus();
+  const params = await searchParams;
+  const hasProvinceParam = Object.prototype.hasOwnProperty.call(params, "province");
+  const filters = {
+    q: String(params.q ?? "").trim(),
+    provinces: hasProvinceParam ? list(params.province).filter((item) => ISAN_PROVINCES.includes(item)) : ["อุดรธานี", "ขอนแก่น"],
+    fiscalYear: String(params.fiscalYear ?? ""), category: String(params.category ?? ""),
+    minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
+    sort: params.sort === "oldest" ? "oldest" : "newest",
+  };
+  const [status, projects] = await Promise.all([loadStatus(), loadProjects(filters)]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
 
   return (
     <main>
       <header>
-        <div>
-          <p className="eyebrow">BIT GOV · ระบบใหม่</p>
-          <h1>ระบบค้นหางานประมูล</h1>
-          <p className="subtitle">เก็บข้อมูลต้นทางให้ครบก่อน แล้วจึงคัดกรองและวิเคราะห์</p>
-        </div>
-        <span className={`status ${ready ? "ready" : "pending"}`}>
-          {ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}
-        </span>
-        <form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form>
+        <div><p className="eyebrow">Bid Dashboard</p><h1>ระบบค้นหางานประมูล ภาคอีสาน</h1><p className="subtitle">ค้นหาโครงการภาครัฐ ดูผลงานตลาด และดาวน์โหลดข้อมูลเพื่อวิเคราะห์</p></div>
+        <div className="header-actions"><span className={`status ${ready ? "ready" : "pending"}`}>{ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}</span><form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form></div>
       </header>
 
-      <section className="notice" aria-live="polite">
-        <strong>Staging สำหรับตรวจระบบ</strong>
-        <span>ยังไม่ใช่ข้อมูล production และยังไม่เปิดการดึงข้อมูลรายวัน</span>
+      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#results">รายการโครงการ</a></nav>
+
+      <section id="overview" className="metrics" aria-label="ภาพรวมข้อมูล">
+        <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
+        <article><span>สัญญา</span><strong>{number(totals.contracts)}</strong><small>พร้อมวิเคราะห์ผู้ชนะและราคา</small></article>
+        <article><span>รายการต้องตรวจ</span><strong>{number(totals.unresolved_errors)}</strong><small>ไม่นำมาปะปนในรายงานหลัก</small></article>
       </section>
 
-      <section className="metrics" aria-label="สถานะข้อมูล">
-        <article>
-          <span>โครงการ</span>
-          <strong>{number(totals.projects)}</strong>
-          <small>ข้อมูลที่ผ่าน normalization</small>
-        </article>
-        <article>
-          <span>สัญญา</span>
-          <strong>{number(totals.contracts)}</strong>
-          <small>แยกจากโครงการตลาด</small>
-        </article>
-        <article>
-          <span>รายการรอตรวจ</span>
-          <strong>{number(totals.unresolved_errors)}</strong>
-          <small>ไม่ปะปนในรายงานหลัก</small>
-        </article>
+      <section id="search" className="filter-panel">
+        <div className="section-heading"><div><h2>ค้นหาโครงการ</h2><p>เลือกได้หลายจังหวัด และไม่จำเป็นต้องกรอกครบทุกช่อง</p></div></div>
+        <form method="get" className="filters">
+          <label className="field field-wide"><span>คำค้น</span><input name="q" defaultValue={filters.q} placeholder="ชื่อโครงการ หน่วยงาน หรือบริษัทผู้ชนะ" /></label>
+          <label className="field"><span>ปีงบประมาณ</span><select name="fiscalYear" defaultValue={filters.fiscalYear}><option value="">ทุกปีที่มีข้อมูล</option>{[2569,2568,2567,2566,2565].map((year)=><option key={year}>{year}</option>)}</select></label>
+          <label className="field"><span>หมวดสินค้า</span><select name="category" defaultValue={filters.category}><option value="">ทุกหมวดสินค้า</option>{CATEGORIES.map((category)=><option key={category}>{category}</option>)}</select></label>
+          <label className="field"><span>ราคาต่ำสุด (บาท)</span><input name="minPrice" type="number" min="0" step="1000" defaultValue={filters.minPrice} placeholder="0" /></label>
+          <label className="field"><span>ราคาสูงสุด (บาท)</span><input name="maxPrice" type="number" min="0" step="1000" defaultValue={filters.maxPrice} placeholder="ไม่จำกัด" /></label>
+          <label className="field"><span>เรียงรายการ</span><select name="sort" defaultValue={filters.sort}><option value="newest">ใหม่ไปเก่า</option><option value="oldest">เก่าไปใหม่</option></select></label>
+          <details className="province-picker" open><summary>จังหวัดที่เลือก: {filters.provinces.length || "ทั้งหมด"}</summary><div className="province-grid">{ISAN_PROVINCES.map((province)=><label key={province}><input type="checkbox" name="province" value={province} defaultChecked={filters.provinces.includes(province)} /><span>{province}</span></label>)}</div></details>
+          <div className="filter-actions"><button className="primary" type="submit">ค้นหา</button><a className="secondary" href="/">ล้างตัวกรอง</a></div>
+        </form>
       </section>
 
-      <section className="next">
-        <h2>สถานะการย้ายระบบ</h2>
-        <ol>
-          <li className="done">Git ใหม่และโครง Monorepo</li>
-          <li className="done">Cloudflare D1 และ Queue (staging)</li>
-          <li className="active">เปิด R2 สำหรับเก็บไฟล์ดิบถาวร</li>
-          <li>เชื่อม API ต้นทางและพิสูจน์จำนวนแถว</li>
-          <li className="done">เปิดหน้า Dashboard พร้อม PIN</li>
-        </ol>
+      <section id="results" className="results-section">
+        <div className="section-heading"><div><h2>พบ {number(projects.total)} โครงการ</h2><p>รายการที่ระบบค้นพบ ไม่ได้ยืนยันว่ายังเปิดรับข้อเสนอ กรุณาตรวจสอบกับ e-GP ก่อนดำเนินการ</p></div></div>
+        {projects.items?.length ? <div className="project-list">{projects.items.map((project)=><article className="project-card" key={project.id}>
+          <div className="project-tags"><span>{project.province || "ไม่ระบุจังหวัด"}</span>{project.category ? <span>{project.category}</span> : null}<span>ปี {project.fiscal_year}</span></div>
+          <h3>{project.title}</h3><p>{project.agency_name || "ไม่ระบุหน่วยงาน"}</p>
+          <dl><div><dt>งบประมาณ</dt><dd>{money(project.budget_sat)}</dd></div><div><dt>ราคาชนะ</dt><dd>{money(project.winning_price_sat)}</dd></div><div><dt>ผู้ชนะ</dt><dd>{project.winner_name || "ยังไม่มีข้อมูล"}</dd></div><div><dt>วันที่ประกาศ</dt><dd>{thaiDate(project.announcement_date_iso)}</dd></div></dl>
+        </article>)}</div> : <div className="empty-state"><strong>ยังไม่พบโครงการตามตัวกรองนี้</strong><span>{totals.projects ? "ลองล้างตัวกรองหรือเลือกจังหวัดเพิ่ม" : "ระบบกำลังนำเข้าข้อมูลชุดแรก เมื่อพร้อมรายการจะแสดงที่หน้านี้อัตโนมัติ"}</span></div>}
       </section>
     </main>
   );
