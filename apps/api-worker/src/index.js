@@ -116,6 +116,29 @@ async function marketSummary(db, url) {
   return { categories: categories.results ?? [], provinces: provinceRows.results ?? [], months: months.results ?? [] };
 }
 
+async function companyWork(db, url) {
+  const companyNames = ["ไอคิวโอเอ โซลูชั่น", "ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี"];
+  const where = [`s.normalized_name IN (${companyNames.map(() => "?").join(",")})`];
+  const values = [...companyNames];
+  const selectedProvinces = provinces(url.searchParams.get("provinces"));
+  if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
+  const fiscalYear = Number(url.searchParams.get("fiscalYear"));
+  if (Number.isInteger(fiscalYear)) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
+  const category = url.searchParams.get("category")?.trim();
+  if (category) { where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.category = ?)"); values.push(category); }
+  const predicate = `WHERE ${where.join(" AND ")}`;
+  const joins = "FROM awards a JOIN projects p ON p.id = a.project_id JOIN suppliers s ON s.id = a.supplier_id";
+  const [totals, items] = await Promise.all([
+    db.prepare(`SELECT COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(a.winning_price_sat, 0)) AS winning_price_sat, COUNT(DISTINCT s.id) AS company_count ${joins} ${predicate}`).bind(...values).first(),
+    db.prepare(`SELECT p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
+      a.winning_price_sat, s.name AS winner_name,
+      (SELECT category FROM product_matches pm WHERE pm.project_id = p.id LIMIT 1) AS category,
+      (SELECT subcategory FROM product_matches pm WHERE pm.project_id = p.id LIMIT 1) AS subcategory
+      ${joins} ${predicate} ORDER BY p.announcement_date_iso DESC, p.id DESC LIMIT 100`).bind(...values).all(),
+  ]);
+  return { totals: totals ?? { project_count: 0, winning_price_sat: 0, company_count: 0 }, items: items.results ?? [] };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -146,6 +169,9 @@ export default {
 
     if (request.method === "GET" && url.pathname === "/v1/market-summary") {
       return json(await marketSummary(env.DB, url));
+    }
+    if (request.method === "GET" && url.pathname === "/v1/company-work") {
+      return json(await companyWork(env.DB, url));
     }
 
     return json({ error: "not_found" }, 404);
