@@ -59,7 +59,8 @@ export function thaiDateToIso(value) {
     const [, day, thaiMonth, year] = thaiMonthMatch;
     let numericYear = Number(year);
     if (numericYear > 2400) numericYear -= 543;
-    if (numericYear < 100) numericYear += 2000;
+    // EGP CSV abbreviates Buddhist Era years (e.g. 67 means 2567, or 2024 CE).
+    if (numericYear < 100) numericYear += 1957;
     const month = String(THAI_MONTHS.get(thaiMonth)).padStart(2, "0");
     const iso = `${numericYear}-${month}-${day.padStart(2, "0")}`;
     return Number.isNaN(Date.parse(`${iso}T00:00:00Z`)) ? null : iso;
@@ -69,7 +70,7 @@ export function thaiDateToIso(value) {
   let [, day, month, year] = match;
   let numericYear = Number(year);
   if (numericYear > 2400) numericYear -= 543;
-  if (numericYear < 100) numericYear += 2000;
+  if (numericYear < 100) numericYear += 1957;
   const iso = `${numericYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
   return Number.isNaN(Date.parse(`${iso}T00:00:00Z`)) ? null : iso;
 }
