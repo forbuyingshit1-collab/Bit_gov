@@ -2,6 +2,7 @@ import {
   buildRawPage,
   fetchDatastorePage,
   fingerprintRecord,
+  normalizeProcurementRecord,
   sha256Hex,
 } from "../../../packages/ingestion/src/index.js";
 
@@ -251,6 +252,19 @@ async function handleLocalCsvUpload(request, env) {
   const nextRangeStart = Math.max(checkpoint, range.end + 1);
   const finished = nextRangeStart >= range.total;
   const now = new Date().toISOString();
+  if (finished) {
+    const prefix = `raw/source-csv/${fiscalYear}/${resourceId}/${String(sourceVersion).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120)}/bytes-`;
+    const listed = await env.RAW_BUCKET.list({ prefix, limit: 1000 });
+    const manifest = {
+      schemaVersion: 1, source: SOURCE_ID, resourceId, fiscalYear, sourceVersion,
+      totalBytes: range.total, completedAt: now,
+      chunks: listed.objects.map((object) => ({ key: object.key, size: object.size, etag: object.etag })),
+    };
+    await env.RAW_BUCKET.put(csvManifestKey({ fiscalYear, resourceId, sourceVersion }), JSON.stringify(manifest), {
+      httpMetadata: { contentType: "application/json" },
+      customMetadata: { source: SOURCE_ID, totalBytes: String(range.total) },
+    });
+  }
   await env.DB.prepare(
     `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE NULL END,
        checkpoint = ? WHERE id = ?`,
@@ -267,6 +281,11 @@ function parseContentRange(value) {
   const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value ?? "");
   if (!match) throw new Error("Source CSV response did not include a valid Content-Range");
   return { start: Number(match[1]), end: Number(match[2]), total: Number(match[3]) };
+}
+
+function csvManifestKey({ fiscalYear, resourceId, sourceVersion }) {
+  const version = String(sourceVersion).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+  return `raw/source-csv/${fiscalYear}/${resourceId}/${version}/manifest.json`;
 }
 
 async function handleCaptureCsvRange(message, env) {
@@ -312,6 +331,102 @@ async function existingRawRecordIds(db, ids) {
     .bind(...ids)
     .all();
   return new Set((result.results ?? []).map(({ id }) => id));
+}
+
+async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVersion, records }, env) {
+  assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+  if (!Array.isArray(records) || records.length === 0 || records.length > 100) {
+    throw new Error("records must contain between 1 and 100 rows");
+  }
+  const resourceDbId = `ckan:${resourceId}`;
+  const run = await env.DB.prepare(
+    `SELECT sync_runs.id FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
+      WHERE sync_runs.id = ? AND sr.id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'`,
+  ).bind(runId, resourceDbId, fiscalYear).first();
+  if (!run) throw new Error("Normalized records do not match an approved raw capture run");
+
+  const observedAt = new Date().toISOString();
+  const r2ObjectKey = csvManifestKey({ fiscalYear, resourceId, sourceVersion });
+  const statements = [];
+  let acceptedCount = 0;
+  let duplicateCount = 0;
+  let quarantineCount = 0;
+
+  for (const record of records) {
+    const fingerprint = await fingerprintRecord(resourceId, record);
+    const rawId = `raw:${fingerprint}`;
+    const normalized = normalizeProcurementRecord(record, fiscalYear);
+    if (normalized.error) {
+      quarantineCount += 1;
+      statements.push(env.DB.prepare(
+        `INSERT OR IGNORE INTO ingestion_errors (id, sync_run_id, resource_id, source_record_id, fingerprint, stage, reason_code, detail, created_at)
+         VALUES (?, ?, ?, ?, ?, 'normalize', ?, NULL, ?)`,
+      ).bind(`error:${fingerprint}`, runId, resourceDbId, String(record._id ?? record["ลำดับ"] ?? ""), fingerprint, normalized.error, observedAt));
+      continue;
+    }
+
+    const exists = await env.DB.prepare("SELECT id FROM raw_records WHERE id = ?").bind(rawId).first();
+    if (exists) {
+      duplicateCount += 1;
+      continue;
+    }
+    acceptedCount += 1;
+    const projectId = `project:${fingerprint}`;
+    const project = normalized.project;
+    const contract = normalized.contract;
+    statements.push(
+      env.DB.prepare(
+        `INSERT INTO raw_records (id, resource_id, sync_run_id, source_record_id, fingerprint, r2_object_key, payload_checksum, observed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(rawId, resourceDbId, runId, String(record._id ?? record["ลำดับ"] ?? ""), fingerprint, r2ObjectKey, fingerprint, observedAt),
+      env.DB.prepare(
+        `INSERT INTO projects (id, project_code, title, description, agency_name, department_name, province, fiscal_year,
+          announcement_date_raw, announcement_date_iso, budget_sat, reference_price_sat, source_url, first_seen_at, last_seen_at, raw_record_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(projectId, project.projectCode, project.title, project.description, project.agencyName, project.departmentName,
+        normalized.locationMatch?.province ?? null, fiscalYear, project.announcementDateRaw, project.announcementDateIso,
+        project.budgetSat, project.referencePriceSat, null, observedAt, observedAt, rawId),
+    );
+
+    const hasContract = contract.contractNumber || contract.contractDateRaw || contract.winningPriceSat !== null;
+    const contractId = hasContract ? `contract:${fingerprint}` : null;
+    if (contractId) statements.push(env.DB.prepare(
+      `INSERT INTO contracts (id, project_id, contract_number, contract_date_raw, contract_date_iso, agreed_price_sat,
+        contract_price_sat, winning_price_sat, winning_price_source, source_url, raw_record_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+    ).bind(contractId, projectId, contract.contractNumber, contract.contractDateRaw, contract.contractDateIso,
+      contract.agreedPriceSat, contract.contractPriceSat, contract.winningPriceSat, contract.winningPriceSource, rawId));
+
+    if (normalized.supplier) {
+      const supplierId = `supplier:${await sha256Hex(normalized.supplier.normalizedName)}`;
+      statements.push(
+        env.DB.prepare(
+          `INSERT INTO suppliers (id, tax_id, name, normalized_name, province) VALUES (?, ?, ?, ?, NULL)
+           ON CONFLICT(normalized_name) DO UPDATE SET name = excluded.name, tax_id = COALESCE(excluded.tax_id, suppliers.tax_id)`,
+        ).bind(supplierId, normalized.supplier.taxId, normalized.supplier.name, normalized.supplier.normalizedName),
+        env.DB.prepare(
+          `INSERT INTO awards (id, project_id, contract_id, supplier_id, award_date_raw, award_date_iso, winning_price_sat, raw_record_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        ).bind(`award:${fingerprint}`, projectId, contractId, supplierId, contract.contractDateRaw, contract.contractDateIso, contract.winningPriceSat, rawId),
+      );
+    }
+    if (normalized.productMatch) statements.push(env.DB.prepare(
+      `INSERT INTO product_matches (id, project_id, category, subcategory, confidence, match_reason, rules_version, decision_status)
+       VALUES (?, ?, ?, NULL, ?, ?, 'v1', ?)`,
+    ).bind(`product:${fingerprint}`, projectId, normalized.productMatch.category, normalized.productMatch.confidence,
+      normalized.productMatch.reason, normalized.productMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
+    if (normalized.locationMatch) statements.push(env.DB.prepare(
+      `INSERT INTO location_matches (id, project_id, province, confidence, match_reason, decision_status)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).bind(`location:${fingerprint}`, projectId, normalized.locationMatch.province, normalized.locationMatch.confidence,
+      normalized.locationMatch.reason, normalized.locationMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
+  }
+  if (statements.length) await env.DB.batch(statements);
+  await env.DB.prepare(
+    `UPDATE sync_runs SET source_count = source_count + ?, accepted_count = accepted_count + ?,
+       duplicate_count = duplicate_count + ?, quarantine_count = quarantine_count + ? WHERE id = ?`,
+  ).bind(records.length, acceptedCount, duplicateCount, quarantineCount, runId).run();
+  return { sourceCount: records.length, acceptedCount, duplicateCount, quarantineCount };
 }
 
 async function enqueueNextPage(message, recordCount, sourceTotal, env) {
@@ -509,6 +624,18 @@ export default {
         return Response.json(await handleLocalCsvUpload(request, env), { status: 200 });
       } catch (error) {
         return Response.json({ error: "upload_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/normalize-records") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        return Response.json(await ingestNormalizedRecords(await request.json(), env));
+      } catch (error) {
+        return Response.json({ error: "normalization_failed", detail: String(error).slice(0, 180) }, { status: 400 });
       }
     }
 
