@@ -15,7 +15,11 @@ export function canonicalJson(value) {
 }
 
 export async function sha256Hex(value) {
-  const bytes = new TextEncoder().encode(typeof value === "string" ? value : canonicalJson(value));
+  const bytes = value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : ArrayBuffer.isView(value)
+      ? new Uint8Array(value.buffer, value.byteOffset, value.byteLength)
+      : new TextEncoder().encode(typeof value === "string" ? value : canonicalJson(value));
   const digest = await crypto.subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }

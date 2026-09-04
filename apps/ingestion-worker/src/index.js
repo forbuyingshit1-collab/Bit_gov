@@ -273,6 +273,44 @@ async function handleLocalCsvUpload(request, env) {
   return { runId, finished, nextRangeStart, totalBytes: range.total, key };
 }
 
+async function confirmDirectCsvUpload(body, env) {
+  const { runId, resourceId, fiscalYear, sourceVersion, rangeStart, rangeEnd, totalBytes, checksum } = body ?? {};
+  assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+  assertInteger(rangeStart, "rangeStart");
+  assertInteger(rangeEnd, "rangeEnd", { min: rangeStart });
+  assertInteger(totalBytes, "totalBytes", { min: rangeEnd + 1 });
+  if (typeof runId !== "string" || typeof resourceId !== "string" || typeof sourceVersion !== "string" || typeof checksum !== "string") {
+    throw new Error("Direct upload confirmation is missing required metadata");
+  }
+  const run = await env.DB.prepare(
+    `SELECT sr.external_id, sr.fiscal_year, sync_runs.checkpoint FROM sync_runs
+      JOIN source_resources sr ON sr.id = sync_runs.resource_id
+      WHERE sync_runs.id = ? AND sync_runs.run_type = 'local_raw_capture'`,
+  ).bind(runId).first();
+  if (!run || run.external_id !== resourceId || run.fiscal_year !== fiscalYear) throw new Error("Direct upload does not match its capture run");
+  const checkpoint = Number(run.checkpoint || 0);
+  if (!Number.isSafeInteger(checkpoint) || rangeStart > checkpoint) throw new Error("Direct upload has a gap before its range");
+  const key = csvChunkKey({ fiscalYear, resourceId, sourceVersion }, rangeStart, rangeEnd);
+  const object = await env.RAW_BUCKET.get(key);
+  if (!object || object.size !== rangeEnd - rangeStart + 1) throw new Error("Direct R2 object is absent or has the wrong size");
+  if (await sha256Hex(new Uint8Array(await object.arrayBuffer())) !== checksum) throw new Error("Direct R2 object checksum mismatch");
+  const nextRangeStart = Math.max(checkpoint, rangeEnd + 1);
+  const finished = nextRangeStart >= totalBytes;
+  const now = new Date().toISOString();
+  if (finished) {
+    const prefix = key.replace(/bytes-\d+-\d+\.csv$/, "bytes-");
+    const listed = await env.RAW_BUCKET.list({ prefix, limit: 1000 });
+    await env.RAW_BUCKET.put(csvManifestKey({ fiscalYear, resourceId, sourceVersion }), JSON.stringify({
+      schemaVersion: 1, source: SOURCE_ID, resourceId, fiscalYear, sourceVersion, totalBytes,
+      completedAt: now, chunks: listed.objects.map((item) => ({ key: item.key, size: item.size, etag: item.etag })),
+    }), { httpMetadata: { contentType: "application/json" } });
+  }
+  await env.DB.prepare(
+    `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE NULL END, checkpoint = ? WHERE id = ?`,
+  ).bind(finished ? "succeeded" : "running", finished ? "succeeded" : "running", now, String(nextRangeStart), runId).run();
+  return { runId, finished, nextRangeStart, totalBytes, key };
+}
+
 function csvChunkKey(message, rangeStart, rangeEnd) {
   const version = String(message.sourceVersion).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
   return `raw/source-csv/${message.fiscalYear}/${message.resourceId}/${version}/bytes-${rangeStart}-${rangeEnd}.csv`;
@@ -628,6 +666,18 @@ export default {
         return Response.json(await handleLocalCsvUpload(request, env), { status: 200 });
       } catch (error) {
         return Response.json({ error: "upload_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/confirm-direct-csv-upload") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        return Response.json(await confirmDirectCsvUpload(await request.json(), env));
+      } catch (error) {
+        return Response.json({ error: "direct_confirmation_failed", detail: String(error).slice(0, 180) }, { status: 400 });
       }
     }
 

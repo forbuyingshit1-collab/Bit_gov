@@ -1,4 +1,8 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 
 const apiKey = process.env.DATA_GO_TH_API_KEY;
 const controlToken = process.env.INGESTION_CONTROL_TOKEN;
@@ -53,6 +57,29 @@ async function uploadChunk({ runId, fiscalYear, resource, rangeStart, chunkBytes
   if (range.start !== rangeStart || range.end > rangeEnd) throw new Error("source returned an inconsistent range");
   const bytes = new Uint8Array(await source.arrayBuffer());
   if (bytes.byteLength !== range.end - range.start + 1) throw new Error("source range body length is inconsistent");
+
+  if (process.env.DIRECT_R2 === "1") {
+    const version = String(resource.last_modified || resource.hash || "unknown").replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+    const key = `raw/source-csv/${fiscalYear}/${resource.id}/${version}/bytes-${range.start}-${range.end}.csv`;
+    const temporaryFile = join(tmpdir(), `bit-gov-${randomUUID()}.csv`);
+    try {
+      await writeFile(temporaryFile, bytes);
+      const wranglerCli = join(process.cwd(), "node_modules", "wrangler", "bin", "wrangler.js");
+      const upload = spawnSync(process.execPath, [wranglerCli, "r2", "object", "put", `bit-gov-raw-staging/${key}`, "--remote", "--file", temporaryFile, "--config", "apps/ingestion-worker/wrangler.toml"], { encoding: "utf8" });
+      if (upload.status !== 0) throw new Error(`direct R2 upload failed: ${(upload.stderr || upload.stdout || upload.error?.message || "unknown").slice(0, 180)}`);
+    } finally {
+      await rm(temporaryFile, { force: true });
+    }
+    const confirmed = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/confirm-direct-csv-upload`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
+      body: JSON.stringify({ runId, fiscalYear, resourceId: resource.id, sourceVersion: resource.last_modified || resource.hash || "unknown",
+        rangeStart: range.start, rangeEnd: range.end, totalBytes: range.total,
+        checksum: createHash("sha256").update(bytes).digest("hex") }),
+    });
+    if (!confirmed.ok) throw new Error(`direct R2 confirmation returned HTTP ${confirmed.status}: ${(await confirmed.text()).slice(0, 180)}`);
+    return confirmed.json();
+  }
 
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const response = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/upload-csv-chunk`, {
