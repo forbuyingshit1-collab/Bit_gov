@@ -657,6 +657,24 @@ export default {
       return Response.json({ updated: true });
     }
 
+    if (request.method === "GET" && url.pathname === "/internal/capture-status") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      const fiscalYear = Number(url.searchParams.get("fiscalYear"));
+      const resourceId = url.searchParams.get("resourceId");
+      if (!resourceId) return Response.json({ error: "resource_id_required" }, { status: 400 });
+      assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+      const capture = await env.DB.prepare(
+        `SELECT sync_runs.id, sync_runs.status, sync_runs.checkpoint, sync_runs.started_at, sync_runs.finished_at
+           FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
+          WHERE sr.external_id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'
+          ORDER BY sync_runs.started_at DESC LIMIT 1`,
+      ).bind(resourceId, fiscalYear).first();
+      return Response.json({ capture: capture ?? null });
+    }
+
     if (request.method === "POST" && url.pathname === "/internal/public-source-probe") {
       const authorized = await secureTokenEqual(
         request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""),

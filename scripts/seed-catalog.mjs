@@ -82,6 +82,15 @@ async function failCapture(runId, reason) {
   });
 }
 
+async function captureStatus(fiscalYear, resourceId) {
+  const url = new URL(`${workerUrl.replace(/\/$/, "")}/internal/capture-status`);
+  url.searchParams.set("fiscalYear", String(fiscalYear));
+  url.searchParams.set("resourceId", resourceId);
+  const response = await fetch(url, { headers: { authorization: `Bearer ${controlToken}` } });
+  if (!response.ok) throw new Error(`capture status returned HTTP ${response.status}`);
+  return (await response.json()).capture;
+}
+
 async function readCaptureState() {
   try {
     return JSON.parse(await readFile(statePath, "utf8"));
@@ -109,7 +118,14 @@ for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
       const state = await readCaptureState();
       const stateKey = `${fiscalYear}:${resource.id}:${resource.last_modified || resource.hash || "unknown"}`;
       const previous = state[stateKey];
-      const started = previous ?? { run_id: (await seed({ fiscalYear, resource, localUpload: true })).run_id, nextRangeStart: 0 };
+      const remote = previous ? null : await captureStatus(fiscalYear, resource.id);
+      if (!previous && remote?.status === "succeeded") {
+        console.log(`${fiscalYear}: already completed ${resource.id}`);
+        continue;
+      }
+      const started = previous ?? (remote?.status === "running" ? {
+        run_id: remote.id, nextRangeStart: Number(remote.checkpoint || 0),
+      } : { run_id: (await seed({ fiscalYear, resource, localUpload: true })).run_id, nextRangeStart: 0 });
       let nextRangeStart = started.nextRangeStart;
       let chunks = 0;
       let uploaded;
