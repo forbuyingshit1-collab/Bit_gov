@@ -347,6 +347,9 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
 
   const observedAt = new Date().toISOString();
   const r2ObjectKey = csvManifestKey({ fiscalYear, resourceId, sourceVersion });
+  if (!(await env.RAW_BUCKET.head(r2ObjectKey))) {
+    throw new Error("Raw capture is incomplete; its immutable manifest is not available");
+  }
   const statements = [];
   let acceptedCount = 0;
   let duplicateCount = 0;
