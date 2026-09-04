@@ -189,11 +189,12 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
     type: "capture_csv_range", runId, resourceDbId, resourceId: resource.id, resourceUrl,
     fiscalYear, sourceVersion, rangeStart: 0,
     chunkBytes: chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
-    stopAfterChunk: stopAfterChunk === true, schemaVersion: 1,
+    stopAfterChunk: stopAfterChunk === true, direct, schemaVersion: 1,
   };
+  let capture;
   if (direct) {
     try {
-      await handleCaptureCsvRange(captureMessage, env);
+      capture = await handleCaptureCsvRange(captureMessage, env);
     } catch (error) {
       await env.DB.prepare(
         "UPDATE sync_runs SET status = 'failed', finished_at = ?, error_summary = ? WHERE id = ?",
@@ -201,7 +202,7 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
       throw error;
     }
   } else await env.INGESTION_QUEUE.send(captureMessage);
-  return runId;
+  return { runId, capture };
 }
 
 function csvChunkKey(message, rangeStart, rangeEnd) {
@@ -244,9 +245,10 @@ async function handleCaptureCsvRange(message, env) {
        checkpoint = ? WHERE id = ?`,
   ).bind(status, status, now, String(range.end + 1), message.runId).run();
 
-  if (!finished && !message.stopAfterChunk) {
+  if (!finished && !message.stopAfterChunk && !message.direct) {
     await env.INGESTION_QUEUE.send({ ...message, rangeStart: range.end + 1 });
   }
+  return { finished, nextRangeStart: range.end + 1, totalBytes: range.total };
 }
 
 async function existingRawRecordIds(db, ids) {
@@ -423,8 +425,19 @@ export default {
       );
       if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
       const body = await request.json();
-      const runId = await seedCatalogResource(body, env);
-      return Response.json({ queued: true, run_id: runId }, { status: 202 });
+      if (typeof body.runId === "string") {
+        const resourceUrl = validatedResourceUrl(body.resource?.url);
+        const capture = await handleCaptureCsvRange({
+          type: "capture_csv_range", runId: body.runId, resourceDbId: `ckan:${body.resource.id}`,
+          resourceId: body.resource.id, resourceUrl, fiscalYear: body.fiscalYear,
+          sourceVersion: body.resource.last_modified || body.resource.hash || "unknown",
+          rangeStart: body.rangeStart, chunkBytes: body.chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
+          stopAfterChunk: body.stopAfterChunk === true, direct: true, schemaVersion: 1,
+        }, env);
+        return Response.json({ queued: false, run_id: body.runId, capture }, { status: 200 });
+      }
+      const result = await seedCatalogResource(body, env);
+      return Response.json({ queued: !body.direct, run_id: result.runId, capture: result.capture ?? null }, { status: 202 });
     }
 
     if (request.method === "POST" && url.pathname === "/internal/public-source-probe") {
