@@ -1,14 +1,40 @@
 import {
   buildRawPage,
-  discoverFiscalYear,
   fetchDatastorePage,
   fingerprintRecord,
-  selectCsvResources,
   sha256Hex,
 } from "../../../packages/ingestion/src/index.js";
 
 const SOURCE_ID = "data-go-th-ckan";
-const DEFAULT_PAGE_LIMIT = 50;
+const DEFAULT_CSV_CHUNK_BYTES = 8 * 1024 * 1024;
+
+function validatedResourceUrl(value) {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || (url.hostname !== "data.go.th" && !url.hostname.endsWith(".data.go.th"))) {
+    throw new Error("Catalog relay returned an untrusted resource URL");
+  }
+  return url.toString();
+}
+
+async function fetchRelayCatalog(fiscalYear, env) {
+  if (!env.CATALOG_RELAY_URL || !env.CATALOG_RELAY_TOKEN) {
+    throw new Error("Catalog relay is not configured");
+  }
+  const url = new URL(env.CATALOG_RELAY_URL);
+  url.searchParams.set("year", String(fiscalYear));
+  const response = await fetch(url, {
+    headers: { authorization: `Bearer ${env.CATALOG_RELAY_TOKEN}`, accept: "application/json" },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Catalog relay failed with HTTP ${response.status}`);
+  const payload = await response.json();
+  return (payload?.resources ?? []).map((resource) => ({
+    id: String(resource.id),
+    url: validatedResourceUrl(resource.url),
+    last_modified: typeof resource.last_modified === "string" ? resource.last_modified : null,
+    hash: typeof resource.hash === "string" ? resource.hash : null,
+  }));
+}
 
 async function secureTokenEqual(received, expected) {
   if (!received || !expected) return false;
@@ -68,13 +94,13 @@ async function handleCatalogSync(message, env) {
 
   for (const fiscalYear of message.years) {
     assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
-    const dataset = await discoverFiscalYear(fiscalYear, {});
-    if (!dataset) {
+    const resources = await fetchRelayCatalog(fiscalYear, env);
+    if (!resources) {
       console.warn("Fiscal-year dataset is unavailable", { fiscalYear });
       continue;
     }
 
-    for (const resource of selectCsvResources(dataset)) {
+    for (const resource of resources) {
       if (queuedResources >= resourceLimit) return;
       const resourceDbId = `ckan:${resource.id}`;
       const runId = crypto.randomUUID();
@@ -112,19 +138,65 @@ async function handleCatalogSync(message, env) {
       ]);
 
       await env.INGESTION_QUEUE.send({
-        type: "capture_page",
+        type: "capture_csv_range",
         runId,
         resourceDbId,
         resourceId: resource.id,
+        resourceUrl: resource.url,
         fiscalYear,
         sourceVersion,
-        offset: 0,
-        pageLimit: message.pageLimit ?? DEFAULT_PAGE_LIMIT,
-        stopAfterPage: message.stopAfterPage === true,
+        rangeStart: 0,
+        chunkBytes: message.chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
+        stopAfterChunk: message.stopAfterChunk === true,
         schemaVersion: 1,
       });
       queuedResources += 1;
     }
+  }
+}
+
+function csvChunkKey(message, rangeStart, rangeEnd) {
+  const version = String(message.sourceVersion).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
+  return `raw/source-csv/${message.fiscalYear}/${message.resourceId}/${version}/bytes-${rangeStart}-${rangeEnd}.csv`;
+}
+
+function parseContentRange(value) {
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(value ?? "");
+  if (!match) throw new Error("Source CSV response did not include a valid Content-Range");
+  return { start: Number(match[1]), end: Number(match[2]), total: Number(match[3]) };
+}
+
+async function handleCaptureCsvRange(message, env) {
+  assertInteger(message.rangeStart, "rangeStart");
+  assertInteger(message.chunkBytes, "chunkBytes", { min: 1, max: DEFAULT_CSV_CHUNK_BYTES });
+  const rangeEnd = message.rangeStart + message.chunkBytes - 1;
+  const response = await fetch(validatedResourceUrl(message.resourceUrl), {
+    headers: { range: `bytes=${message.rangeStart}-${rangeEnd}` },
+  });
+  if (response.status !== 206) throw new Error(`Source CSV range request returned HTTP ${response.status}`);
+  const range = parseContentRange(response.headers.get("content-range"));
+  if (range.start !== message.rangeStart || range.end > rangeEnd) throw new Error("Source CSV range response was inconsistent");
+
+  const body = new Uint8Array(await response.arrayBuffer());
+  const key = csvChunkKey(message, range.start, range.end);
+  const checksum = await sha256Hex(body);
+  if (!(await env.RAW_BUCKET.head(key))) {
+    await env.RAW_BUCKET.put(key, body, {
+      httpMetadata: { contentType: "text/csv" },
+      customMetadata: { sha256: checksum, source: SOURCE_ID, contentRange: `${range.start}-${range.end}/${range.total}` },
+    });
+  }
+
+  const finished = range.end + 1 >= range.total;
+  const status = finished ? "succeeded" : message.stopAfterChunk ? "partial" : "running";
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? IN ('succeeded', 'partial') THEN ? ELSE NULL END,
+       checkpoint = ? WHERE id = ?`,
+  ).bind(status, status, now, String(range.end + 1), message.runId).run();
+
+  if (!finished && !message.stopAfterChunk) {
+    await env.INGESTION_QUEUE.send({ ...message, rangeStart: range.end + 1 });
   }
 }
 
@@ -256,6 +328,7 @@ async function handleCapturePage(message, env) {
 async function processMessage(message, env) {
   if (!message || message.schemaVersion !== 1) throw new Error("Unsupported queue message");
   if (message.type === "catalog_sync") return handleCatalogSync(message, env);
+  if (message.type === "capture_csv_range") return handleCaptureCsvRange(message, env);
   if (message.type === "capture_page") return handleCapturePage(message, env);
   throw new Error(`Unsupported queue message type: ${message.type}`);
 }
@@ -287,8 +360,8 @@ export default {
         type: "catalog_sync",
         years: [2568],
         resourceLimit: 1,
-        pageLimit: 10,
-        stopAfterPage: true,
+        chunkBytes: 1024 * 1024,
+        stopAfterChunk: true,
         testMode: true,
         schemaVersion: 1,
       });

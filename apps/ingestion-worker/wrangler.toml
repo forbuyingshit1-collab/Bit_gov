@@ -30,3 +30,4 @@ max_retries = 3
 
 [vars]
 APP_ENV = "staging"
+CATALOG_RELAY_URL = "https://bit-gov-dashboard-gamma.vercel.app/api/internal/catalog"
