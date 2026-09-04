@@ -34,7 +34,11 @@ async function ckanAction(action, params) {
     headers,
     signal: AbortSignal.timeout(20_000),
   });
-  if (!response.ok) throw new Error(`CKAN responded with HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(`CKAN responded with HTTP ${response.status}`);
+    error.upstreamStatus = response.status;
+    throw error;
+  }
 
   const payload = await response.json();
   if (payload?.success !== true) throw new Error("CKAN returned an unsuccessful response");
@@ -62,6 +66,6 @@ export async function GET(request) {
     return json({ fiscal_year: year, dataset, resources: dataset.resources });
   } catch (error) {
     console.error("catalog relay upstream request failed", { message: error instanceof Error ? error.message : "unknown" });
-    return json({ error: "upstream_unavailable" }, 502);
+    return json({ error: "upstream_unavailable", upstream_status: error?.upstreamStatus ?? null }, 502);
   }
 }
