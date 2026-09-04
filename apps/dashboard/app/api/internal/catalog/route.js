@@ -22,9 +22,16 @@ async function ckanAction(action, params) {
   const url = new URL(`${CKAN_ACTION_URL}/${action}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
 
+  const headers = {
+    accept: "application/json",
+    "accept-language": "th-TH,th;q=0.9,en;q=0.7",
+    "user-agent": "Mozilla/5.0 (compatible; BIT-GOV/1.0; +https://github.com/forbuyingshit1-collab/Bit_gov)",
+  };
+  if (process.env.DATA_GO_TH_API_KEY) headers["api-key"] = process.env.DATA_GO_TH_API_KEY;
+
   const response = await fetch(url, {
     cache: "no-store",
-    headers: { accept: "application/json", "accept-language": "th-TH,th;q=0.9,en;q=0.7" },
+    headers,
     signal: AbortSignal.timeout(20_000),
   });
   if (!response.ok) throw new Error(`CKAN responded with HTTP ${response.status}`);
