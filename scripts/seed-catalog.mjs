@@ -5,6 +5,7 @@ const years = (process.env.FISCAL_YEARS ?? "2565:2568").split(":").map(Number);
 const resourceLimit = Number(process.env.RESOURCE_LIMIT ?? Number.MAX_SAFE_INTEGER);
 const captureBytes = Number(process.env.CAPTURE_BYTES ?? 8 * 1024 * 1024);
 const maxChunks = Number(process.env.MAX_CHUNKS ?? 1);
+const chunkDelayMs = Number(process.env.CHUNK_DELAY_MS ?? 3000);
 
 if (!apiKey || !controlToken || !workerUrl || years.length !== 2 || years.some((year) => !Number.isInteger(year))) {
   throw new Error("Set DATA_GO_TH_API_KEY, INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL and FISCAL_YEARS=2565:2568");
@@ -48,6 +49,7 @@ for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
     let result = await seed({ fiscalYear, resource, direct, stopAfterChunk: process.env.SMOKE === "1", chunkBytes: captureBytes });
     let chunks = 1;
     while (direct && !result.capture.finished && chunks < maxChunks) {
+      await new Promise((resolve) => setTimeout(resolve, chunkDelayMs));
       result = await seed({ fiscalYear, resource, runId: result.run_id, rangeStart: result.capture.nextRangeStart, direct: true, chunkBytes: captureBytes });
       chunks += 1;
     }
