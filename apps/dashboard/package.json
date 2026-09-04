@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "check": "next build",
-    "test": "node --test lib/catalog.test.mjs"
+    "test": "node --test lib/catalog.test.mjs lib/session.test.mjs"
   },
   "dependencies": {
     "next": "^16.3.4",

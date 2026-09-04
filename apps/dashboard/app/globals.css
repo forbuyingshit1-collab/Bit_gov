@@ -12,6 +12,7 @@ body { margin: 0; background: #f6f8fb; }
 main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 56px 0 80px; }
 
 header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+.logout { min-height: 44px; padding: 10px 16px; border: 1px solid #b9cbe0; border-radius: 10px; background: white; color: #0b2545; font: inherit; font-weight: 700; cursor: pointer; }
 
 .eyebrow { margin: 0 0 8px; color: #27659b; font-size: 15px; font-weight: 700; letter-spacing: .04em; }
 
@@ -39,6 +40,16 @@ h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); line-height: 1.15; }
 .next li { padding-left: 6px; color: #66778a; }
 .next li.done { color: #146c43; }
 .next li.active { color: #815500; font-weight: 700; }
+
+.login-page { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
+.login-card { width: min(100%, 560px); padding: 36px; border: 2px solid #c6d2df; border-radius: 22px; background: white; box-shadow: 0 8px 24px rgba(20, 50, 80, .08); text-align: center; }
+.login-card h1 { font-size: clamp(28px, 5vw, 40px); }
+.login-form { display: grid; gap: 12px; margin-top: 28px; text-align: left; }
+.login-form label { font-size: 18px; font-weight: 700; }
+.login-form input { height: 58px; border: 1px solid #9eb5cc; border-radius: 12px; padding: 0 14px; color: #0b2545; font: 700 26px/1 system-ui; letter-spacing: .3em; text-align: center; }
+.login-form p { margin: 0; color: #50647a; }
+.login-form button { min-height: 58px; margin-top: 8px; border: 0; border-radius: 12px; background: #154a7c; color: white; font: 700 20px/1 Tahoma, sans-serif; cursor: pointer; }
+.login-error { margin: 24px 0 -8px; padding: 14px; border: 1px solid #d99; border-radius: 12px; color: #a31919; background: #fff5f5; text-align: left; }
 
 @media (max-width: 720px) {
   main { padding-top: 28px; }

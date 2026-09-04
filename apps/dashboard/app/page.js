@@ -1,5 +1,10 @@
 export const dynamic = "force-dynamic";
 
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { logoutAction } from "./login/actions";
+import { SESSION_COOKIE, verifySessionToken } from "../lib/session.mjs";
+
 const apiUrl = process.env.BIT_GOV_API_URL;
 
 async function loadStatus() {
@@ -18,6 +23,8 @@ function number(value) {
 }
 
 export default async function Home() {
+  const cookieStore = await cookies();
+  if (!verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value)) redirect("/login");
   const status = await loadStatus();
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
@@ -33,6 +40,7 @@ export default async function Home() {
         <span className={`status ${ready ? "ready" : "pending"}`}>
           {ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}
         </span>
+        <form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form>
       </header>
 
       <section className="notice" aria-live="polite">
@@ -65,7 +73,7 @@ export default async function Home() {
           <li className="done">Cloudflare D1 และ Queue (staging)</li>
           <li className="active">เปิด R2 สำหรับเก็บไฟล์ดิบถาวร</li>
           <li>เชื่อม API ต้นทางและพิสูจน์จำนวนแถว</li>
-          <li>เปิดหน้า Dashboard พร้อม PIN</li>
+          <li className="done">เปิดหน้า Dashboard พร้อม PIN</li>
         </ol>
       </section>
     </main>
