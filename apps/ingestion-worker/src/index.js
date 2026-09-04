@@ -7,7 +7,8 @@ import {
 } from "../../../packages/ingestion/src/index.js";
 
 const SOURCE_ID = "data-go-th-ckan";
-const DEFAULT_CSV_CHUNK_BYTES = 8 * 1024 * 1024;
+// 8 MiB timed out through the authenticated Worker path in staging; 1 MiB was verified end-to-end.
+const DEFAULT_CSV_CHUNK_BYTES = 1 * 1024 * 1024;
 
 function validatedResourceUrl(value) {
   const url = new URL(value);

@@ -5,9 +5,10 @@ const controlToken = process.env.INGESTION_CONTROL_TOKEN;
 const workerUrl = process.env.INGESTION_WORKER_URL;
 const years = (process.env.FISCAL_YEARS ?? "2565:2568").split(":").map(Number);
 const resourceLimit = Number(process.env.RESOURCE_LIMIT ?? Number.MAX_SAFE_INTEGER);
-const captureBytes = Number(process.env.CAPTURE_BYTES ?? 8 * 1024 * 1024);
+const captureBytes = Number(process.env.CAPTURE_BYTES ?? 1 * 1024 * 1024);
 const maxChunks = Number(process.env.MAX_CHUNKS ?? 1);
-const chunkDelayMs = Number(process.env.CHUNK_DELAY_MS ?? 3000);
+// Pace writes conservatively: staging has returned transient 503s after burst R2 uploads.
+const chunkDelayMs = Number(process.env.CHUNK_DELAY_MS ?? 15000);
 const statePath = process.env.CAPTURE_STATE_PATH ?? ".bit-gov-capture-state.json";
 
 if (!apiKey || !controlToken || !workerUrl || years.length !== 2 || years.some((year) => !Number.isInteger(year))) {
