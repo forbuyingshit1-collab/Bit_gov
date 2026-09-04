@@ -155,7 +155,7 @@ async function handleCatalogSync(message, env) {
   }
 }
 
-async function seedCatalogResource({ fiscalYear, resource, testMode = false, chunkBytes, stopAfterChunk, direct = false }, env) {
+async function seedCatalogResource({ fiscalYear, resource, testMode = false, chunkBytes, stopAfterChunk, direct = false, localUpload = false }, env) {
   assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
   if (!resource || typeof resource.id !== "string") throw new Error("seed resource id is required");
   const resourceUrl = validatedResourceUrl(resource.url);
@@ -183,7 +183,7 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
       `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at,
         source_count, accepted_count, duplicate_count, quarantine_count, checkpoint)
        VALUES (?, ?, ?, 'running', ?, 0, 0, 0, 0, '0')`,
-    ).bind(runId, resourceDbId, testMode ? "smoke_capture" : "raw_capture", now),
+    ).bind(runId, resourceDbId, testMode ? "smoke_capture" : localUpload ? "local_raw_capture" : "raw_capture", now),
   ]);
   const captureMessage = {
     type: "capture_csv_range", runId, resourceDbId, resourceId: resource.id, resourceUrl,
@@ -192,7 +192,9 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
     stopAfterChunk: stopAfterChunk === true, direct, schemaVersion: 1,
   };
   let capture;
-  if (direct) {
+  if (localUpload) {
+    capture = { localUpload: true, nextRangeStart: 0, totalBytes: null, finished: false };
+  } else if (direct) {
     try {
       capture = await handleCaptureCsvRange(captureMessage, env);
     } catch (error) {
@@ -203,6 +205,57 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
     }
   } else await env.INGESTION_QUEUE.send(captureMessage);
   return { runId, capture };
+}
+
+function uploadHeader(request, name) {
+  const value = request.headers.get(name);
+  if (!value) throw new Error(`Missing ${name} header`);
+  return value;
+}
+
+async function handleLocalCsvUpload(request, env) {
+  const runId = uploadHeader(request, "x-bit-gov-run-id");
+  const resourceId = uploadHeader(request, "x-bit-gov-resource-id");
+  const fiscalYear = Number(uploadHeader(request, "x-bit-gov-fiscal-year"));
+  const sourceVersion = uploadHeader(request, "x-bit-gov-source-version");
+  assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+  const range = parseContentRange(uploadHeader(request, "content-range"));
+  const expectedLength = range.end - range.start + 1;
+  if (expectedLength > DEFAULT_CSV_CHUNK_BYTES) throw new Error("CSV upload chunk is too large");
+
+  const run = await env.DB.prepare(
+    `SELECT sr.id AS resource_db_id, sr.external_id, sr.fiscal_year, sr.resource_url, sync_runs.checkpoint
+       FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
+      WHERE sync_runs.id = ? AND sync_runs.run_type = 'local_raw_capture'`,
+  ).bind(runId).first();
+  if (!run || run.external_id !== resourceId || run.fiscal_year !== fiscalYear) {
+    throw new Error("Upload does not match a local raw capture run");
+  }
+  const checkpoint = Number(run.checkpoint || 0);
+  if (!Number.isSafeInteger(checkpoint) || range.start > checkpoint) {
+    throw new Error("CSV upload has a gap before its range");
+  }
+
+  const body = new Uint8Array(await request.arrayBuffer());
+  if (body.byteLength !== expectedLength) throw new Error("CSV upload length does not match Content-Range");
+  const message = { fiscalYear, resourceId, sourceVersion };
+  const key = csvChunkKey(message, range.start, range.end);
+  if (!(await env.RAW_BUCKET.head(key))) {
+    const checksum = await sha256Hex(body);
+    await env.RAW_BUCKET.put(key, body, {
+      httpMetadata: { contentType: "text/csv" },
+      customMetadata: { sha256: checksum, source: SOURCE_ID, contentRange: `${range.start}-${range.end}/${range.total}`, uploadedBy: "local-bridge" },
+    });
+  }
+
+  const nextRangeStart = Math.max(checkpoint, range.end + 1);
+  const finished = nextRangeStart >= range.total;
+  const now = new Date().toISOString();
+  await env.DB.prepare(
+    `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE NULL END,
+       checkpoint = ? WHERE id = ?`,
+  ).bind(finished ? "succeeded" : "running", finished ? "succeeded" : "running", now, String(nextRangeStart), runId).run();
+  return { runId, finished, nextRangeStart, totalBytes: range.total, key };
 }
 
 function csvChunkKey(message, rangeStart, rangeEnd) {
@@ -445,6 +498,18 @@ export default {
       }
       const result = await seedCatalogResource(body, env);
       return Response.json({ queued: !body.direct, run_id: result.runId, capture: result.capture ?? null }, { status: 202 });
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/upload-csv-chunk") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        return Response.json(await handleLocalCsvUpload(request, env), { status: 200 });
+      } catch (error) {
+        return Response.json({ error: "upload_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/internal/public-source-probe") {

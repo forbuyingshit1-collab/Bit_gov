@@ -32,7 +32,7 @@ Do not run database migrations, start ingestion or deploy production before reso
 - D1 migration `0002_ingestion_pages.sql`: applied and verified on staging
 - Ingestion Worker: deployed with D1/R2/Queue bindings and secrets; cron intentionally disabled
 - Source probe: CKAN API is blocked from Cloudflare and Vercel (HTTP 403), while direct CSV range download succeeds (HTTP 206)
-- Local metadata bridge: `scripts/seed-catalog.mjs` discovers resources using the Data.go API-key gateway then posts allowlisted metadata to the control-token-protected ingestion endpoint. It never uploads raw CSV or writes a secret file.
-- Smoke capture: one FY2568 CSV object was written to R2 and verified at 1 MiB; queued bulk work remains disabled pending queue diagnostic and row accounting.
+- Local acquisition bridge: `scripts/seed-catalog.mjs` discovers resources using the Data.go API-key gateway, streams bounded public CSV ranges locally, then writes them to R2 through the control-token-protected ingestion endpoint. It creates only a gitignored resume checkpoint, never a raw local file or secret file.
+- Smoke capture: one FY2568 CSV range was forwarded through the local bridge, written to R2, and verified byte-for-byte at 1 MiB; queued bulk work remains disabled pending row normalization and accounting.
 
 The checked-in Wrangler configuration contains resource IDs only. It must never contain an API token, source API key, PIN, or PIN hash.

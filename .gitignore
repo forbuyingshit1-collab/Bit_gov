@@ -17,8 +17,8 @@ coverage/
 *.parquet
 backups/
 raw/
+.bit-gov-capture-state.json
 
 *.log
 .DS_Store
 Thumbs.db
-
