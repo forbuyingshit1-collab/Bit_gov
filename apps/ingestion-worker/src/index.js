@@ -454,8 +454,8 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
     }
     if (normalized.productMatch) statements.push(env.DB.prepare(
       `INSERT INTO product_matches (id, project_id, category, subcategory, confidence, match_reason, rules_version, decision_status)
-       VALUES (?, ?, ?, NULL, ?, ?, 'v1', ?)`,
-    ).bind(`product:${fingerprint}`, projectId, normalized.productMatch.category, normalized.productMatch.confidence,
+       VALUES (?, ?, ?, ?, ?, ?, 'v2', ?)`,
+    ).bind(`product:${fingerprint}`, projectId, normalized.productMatch.category, normalized.productMatch.subcategory, normalized.productMatch.confidence,
       normalized.productMatch.reason, normalized.productMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
     if (normalized.locationMatch) statements.push(env.DB.prepare(
       `INSERT INTO location_matches (id, project_id, province, confidence, match_reason, decision_status)

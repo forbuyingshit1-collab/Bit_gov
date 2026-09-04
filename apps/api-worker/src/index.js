@@ -52,6 +52,11 @@ async function searchProjects(db, url, maximumLimit = 100) {
     where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.category = ? AND pm.decision_status IN ('auto_approved', 'approved'))");
     values.push(category);
   }
+  const subcategory = url.searchParams.get("subcategory")?.trim();
+  if (subcategory) {
+    where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.subcategory = ? AND pm.decision_status IN ('auto_approved', 'approved'))");
+    values.push(subcategory);
+  }
   const query = url.searchParams.get("q")?.trim();
   if (query) {
     where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.name LIKE ?))");
@@ -72,7 +77,8 @@ async function searchProjects(db, url, maximumLimit = 100) {
        p.budget_sat, p.reference_price_sat,
        (SELECT winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1) AS winning_price_sat,
        (SELECT s.name FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id LIMIT 1) AS winner_name,
-       (SELECT category FROM product_matches pm WHERE pm.project_id = p.id AND pm.decision_status IN ('auto_approved', 'approved') LIMIT 1) AS category
+       (SELECT category FROM product_matches pm WHERE pm.project_id = p.id AND pm.decision_status IN ('auto_approved', 'approved') LIMIT 1) AS category,
+       (SELECT subcategory FROM product_matches pm WHERE pm.project_id = p.id AND pm.decision_status IN ('auto_approved', 'approved') LIMIT 1) AS subcategory
      ${base} ORDER BY p.announcement_date_iso ${direction}, p.id ${direction} LIMIT ? OFFSET ?`,
   ).bind(...values, limit, offset).all();
   return { total: count?.count ?? 0, limit, offset, items: result.results ?? [] };
@@ -84,9 +90,9 @@ function csvCell(value) {
 }
 
 function projectCsv(items) {
-  const headers = ["รหัสโครงการ", "ชื่อโครงการ", "หน่วยงาน", "จังหวัด", "ปีงบประมาณ", "วันที่ประกาศ", "หมวดสินค้า", "งบประมาณ(บาท)", "ราคากลาง(บาท)", "ราคาชนะ(บาท)", "ผู้ชนะ"];
+  const headers = ["รหัสโครงการ", "ชื่อโครงการ", "หน่วยงาน", "จังหวัด", "ปีงบประมาณ", "วันที่ประกาศ", "หมวดหลัก", "หมวดย่อย", "งบประมาณ(บาท)", "ราคากลาง(บาท)", "ราคาชนะ(บาท)", "ผู้ชนะ"];
   const rows = items.map((item) => [item.project_code, item.title, item.agency_name, item.province, item.fiscal_year,
-    item.announcement_date_iso, item.category, item.budget_sat == null ? "" : item.budget_sat / 100,
+    item.announcement_date_iso, item.category, item.subcategory, item.budget_sat == null ? "" : item.budget_sat / 100,
     item.reference_price_sat == null ? "" : item.reference_price_sat / 100,
     item.winning_price_sat == null ? "" : item.winning_price_sat / 100, item.winner_name]);
   return `\uFEFF${[headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n")}`;

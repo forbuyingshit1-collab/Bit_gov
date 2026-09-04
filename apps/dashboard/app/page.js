@@ -11,6 +11,7 @@ const ISAN_PROVINCES = [
   "ร้อยเอ็ด", "ศรีสะเกษ", "สกลนคร", "สุรินทร์", "หนองคาย", "หนองบัวลำภู", "อำนาจเจริญ", "อุดรธานี", "อุบลราชธานี", "เลย",
 ];
 const CATEGORIES = ["เครื่องพิมพ์", "จอ LED", "จอ Interactive", "ระบบเสียงและแสง", "ความปลอดภัย"];
+const SUBCATEGORIES = ["ตัวเครื่องและมัลติฟังก์ชัน", "หมึกและวัสดุสิ้นเปลือง", "เช่าเครื่องพิมพ์", "ซ่อมและบำรุงรักษา", "จอ LED", "Video Wall", "ป้ายดิจิทัล", "จอ Interactive", "กระดานอัจฉริยะ", "ห้องเรียนอัจฉริยะ", "ระบบเสียง", "ระบบแสง", "ระบบเสียงและแสงแบบบูรณาการ", "กล้องวงจรปิด CCTV", "เครื่องบันทึก NVR/DVR", "VMS และห้องควบคุม", "Access Control"];
 
 function list(value) { return Array.isArray(value) ? value : value ? [value] : []; }
 function number(value) { return new Intl.NumberFormat("th-TH").format(value ?? 0); }
@@ -53,6 +54,7 @@ async function loadProjects(filters) {
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
   if (filters.category) url.searchParams.set("category", filters.category);
+  if (filters.subcategory) url.searchParams.set("subcategory", filters.subcategory);
   if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
   if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
   url.searchParams.set("sort", filters.sort);
@@ -82,7 +84,7 @@ export default async function Home({ searchParams }) {
   const filters = {
     q: String(params.q ?? "").trim(),
     provinces: hasProvinceParam ? list(params.province).filter((item) => ISAN_PROVINCES.includes(item)) : ["อุดรธานี", "ขอนแก่น"],
-    fiscalYear: String(params.fiscalYear ?? ""), category: String(params.category ?? ""),
+    fiscalYear: String(params.fiscalYear ?? ""), category: String(params.category ?? ""), subcategory: String(params.subcategory ?? ""),
     minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
     sort: params.sort === "oldest" ? "oldest" : "newest",
   };
@@ -94,6 +96,7 @@ export default async function Home({ searchParams }) {
   if (filters.provinces.length) exportParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) exportParams.set("fiscalYear", filters.fiscalYear);
   if (filters.category) exportParams.set("category", filters.category);
+  if (filters.subcategory) exportParams.set("subcategory", filters.subcategory);
   if (filters.minPrice) exportParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
   if (filters.maxPrice) exportParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
   exportParams.set("sort", filters.sort);
@@ -124,6 +127,7 @@ export default async function Home({ searchParams }) {
           <label className="field field-wide"><span>คำค้น</span><input name="q" defaultValue={filters.q} placeholder="ชื่อโครงการ หน่วยงาน หรือบริษัทผู้ชนะ" /></label>
           <label className="field"><span>ปีงบประมาณ</span><select name="fiscalYear" defaultValue={filters.fiscalYear}><option value="">ทุกปีที่มีข้อมูล</option>{[2569,2568,2567,2566,2565].map((year)=><option key={year}>{year}</option>)}</select></label>
           <label className="field"><span>หมวดสินค้า</span><select name="category" defaultValue={filters.category}><option value="">ทุกหมวดสินค้า</option>{CATEGORIES.map((category)=><option key={category}>{category}</option>)}</select></label>
+          <label className="field"><span>หมวดย่อย</span><select name="subcategory" defaultValue={filters.subcategory}><option value="">ทุกหมวดย่อย</option>{SUBCATEGORIES.map((subcategory)=><option key={subcategory}>{subcategory}</option>)}</select></label>
           <label className="field"><span>ราคาต่ำสุด (บาท)</span><input name="minPrice" type="number" min="0" step="1000" defaultValue={filters.minPrice} placeholder="0" /></label>
           <label className="field"><span>ราคาสูงสุด (บาท)</span><input name="maxPrice" type="number" min="0" step="1000" defaultValue={filters.maxPrice} placeholder="ไม่จำกัด" /></label>
           <label className="field"><span>เรียงรายการ</span><select name="sort" defaultValue={filters.sort}><option value="newest">ใหม่ไปเก่า</option><option value="oldest">เก่าไปใหม่</option></select></label>
@@ -135,7 +139,7 @@ export default async function Home({ searchParams }) {
       <section id="results" className="results-section">
         <div className="section-heading"><div><h2>พบ {number(projects.total)} โครงการ</h2><p>รายการที่ระบบค้นพบ ไม่ได้ยืนยันว่ายังเปิดรับข้อเสนอ กรุณาตรวจสอบกับ e-GP ก่อนดำเนินการ</p></div><a className="secondary" href={`/api/export/projects?${exportParams}`}>ดาวน์โหลด CSV</a></div>
         {projects.items?.length ? <div className="project-list">{projects.items.map((project)=><article className="project-card" key={project.id}>
-          <div className="project-tags"><span>{project.province || "ไม่ระบุจังหวัด"}</span>{project.category ? <span>{project.category}</span> : null}<span>ปี {project.fiscal_year}</span></div>
+          <div className="project-tags"><span>{project.province || "ไม่ระบุจังหวัด"}</span>{project.category ? <span>{project.category}</span> : null}{project.subcategory ? <span>{project.subcategory}</span> : null}<span>ปี {project.fiscal_year}</span></div>
           <h3>{project.title}</h3><p>{project.agency_name || "ไม่ระบุหน่วยงาน"}</p>
           <dl><div><dt>งบประมาณ</dt><dd>{money(project.budget_sat)}</dd></div><div><dt>ราคาชนะ</dt><dd>{money(project.winning_price_sat)}</dd></div><div><dt>ผู้ชนะ</dt><dd>{project.winner_name || "ยังไม่มีข้อมูล"}</dd></div><div><dt>วันที่ประกาศ</dt><dd>{thaiDate(project.announcement_date_iso)}</dd></div></dl>
         </article>)}</div> : <div className="empty-state"><strong>ยังไม่พบโครงการตามตัวกรองนี้</strong><span>{totals.projects ? "ลองล้างตัวกรองหรือเลือกจังหวัดเพิ่ม" : "ระบบกำลังนำเข้าข้อมูลชุดแรก เมื่อพร้อมรายการจะแสดงที่หน้านี้อัตโนมัติ"}</span></div>}

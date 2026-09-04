@@ -10,11 +10,23 @@ const ISAN_PROVINCES = new Set([
 ]);
 
 const CATEGORY_RULES = [
-  { category: "เครื่องพิมพ์", include: [/เครื่องพิมพ์|printer|multifunction|มัลติฟังก์ชัน/i], exclude: [] },
-  { category: "จอ LED", include: [/จอ\s*led|led\s*(display|screen|wall)|video\s*wall|ป้ายดิจิทัล/i], exclude: [/ไฟถนน|หลอดไฟ|โคมไฟ/i] },
-  { category: "จอ Interactive", include: [/interactive|กระดานอัจฉริยะ|จออัจฉริยะ|smart\s*board/i], exclude: [] },
-  { category: "ระบบเสียงและแสง", include: [/ระบบเสียง|ระบบแสง|sound\s*system|lighting\s*system/i], exclude: [/เช่า.*(เวที|เครื่องเสียง|แสง)|รับจ้าง.*อีเวนต์/i] },
-  { category: "ความปลอดภัย", include: [/cctv|กล้องวงจรปิด|nvr|dvr|vms|access\s*control|control\s*room/i], exclude: [] },
+  { category: "เครื่องพิมพ์", include: [/เครื่องพิมพ์|printer|multifunction|มัลติฟังก์ชัน|หมึกพิมพ์|ตลับหมึก/i], exclude: [], subcategories: [
+    ["ซ่อมและบำรุงรักษา", /ซ่อม|บำรุงรักษา|maintenance/i], ["เช่าเครื่องพิมพ์", /เช่า|rent/i],
+    ["หมึกและวัสดุสิ้นเปลือง", /หมึก|ตลับหมึก|toner|drum|ribbon/i], ["ตัวเครื่องและมัลติฟังก์ชัน", /./],
+  ] },
+  { category: "จอ LED", include: [/จอ\s*led|led\s*(display|screen|wall)|video\s*wall|ป้ายดิจิทัล/i], exclude: [/ไฟถนน|หลอดไฟ|โคมไฟ/i], subcategories: [
+    ["Video Wall", /video\s*wall/i], ["ป้ายดิจิทัล", /ป้ายดิจิทัล|digital\s*signage/i], ["จอ LED", /./],
+  ] },
+  { category: "จอ Interactive", include: [/interactive|กระดานอัจฉริยะ|จออัจฉริยะ|smart\s*board/i], exclude: [], subcategories: [
+    ["ห้องเรียนอัจฉริยะ", /ห้องเรียน|classroom/i], ["กระดานอัจฉริยะ", /กระดาน|smart\s*board/i], ["จอ Interactive", /./],
+  ] },
+  { category: "ระบบเสียงและแสง", include: [/ระบบเสียง|ระบบแสง|sound\s*system|lighting\s*system/i], exclude: [/เช่า.*(เวที|เครื่องเสียง|แสง)|รับจ้าง.*อีเวนต์/i], subcategories: [
+    ["ระบบเสียง", /ระบบเสียง|sound\s*system/i], ["ระบบแสง", /ระบบแสง|lighting\s*system/i], ["ระบบเสียงและแสงแบบบูรณาการ", /./],
+  ] },
+  { category: "ความปลอดภัย", include: [/cctv|กล้องวงจรปิด|nvr|dvr|vms|access\s*control|control\s*room/i], exclude: [], subcategories: [
+    ["Access Control", /access\s*control|ควบคุมการเข้าออก/i], ["VMS และห้องควบคุม", /vms|control\s*room|ห้องควบคุม/i],
+    ["เครื่องบันทึก NVR/DVR", /nvr|dvr|เครื่องบันทึก/i], ["กล้องวงจรปิด CCTV", /./],
+  ] },
 ];
 
 const FIELD_ALIASES = {
@@ -83,7 +95,8 @@ export function classifyProduct(title, description) {
   const text = `${normalizeText(title)} ${normalizeText(description)}`;
   for (const rule of CATEGORY_RULES) {
     if (rule.include.some((expression) => expression.test(text)) && !rule.exclude.some((expression) => expression.test(text))) {
-      return { category: rule.category, confidence: 0.9, reason: "keyword_rule" };
+      const subcategory = rule.subcategories.find(([, expression]) => expression.test(text))?.[0] ?? null;
+      return { category: rule.category, subcategory, confidence: 0.9, reason: "keyword_rule" };
     }
   }
   return null;

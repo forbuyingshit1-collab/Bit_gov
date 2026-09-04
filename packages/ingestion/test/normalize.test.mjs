@@ -28,6 +28,12 @@ test("excludes LED street lighting", () => {
   assert.equal(classifyProduct("จัดซื้อโคมไฟถนน LED", ""), null);
 });
 
+test("assigns useful product subcategories", () => {
+  assert.equal(normalizeProcurementRecord({ "ชื่อโครงการ": "จัดซื้อหมึกพิมพ์เลเซอร์" }, 2568).productMatch.subcategory, "หมึกและวัสดุสิ้นเปลือง");
+  assert.equal(normalizeProcurementRecord({ "ชื่อโครงการ": "ติดตั้งกล้อง CCTV พร้อม NVR" }, 2568).productMatch.subcategory, "เครื่องบันทึก NVR/DVR");
+  assert.equal(normalizeProcurementRecord({ "ชื่อโครงการ": "ติดตั้ง video wall" }, 2568).productMatch.subcategory, "Video Wall");
+});
+
 test("maps the official EGP contract CSV headers", () => {
   const result = normalizeProcurementRecord({
     "รหัสโครงการ": "67039549408",
