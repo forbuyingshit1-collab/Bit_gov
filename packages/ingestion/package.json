@@ -2,6 +2,12 @@
   "name": "@bit-gov/ingestion",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "check": "node --check src/ckan.js && node --check src/raw.js",
+    "test": "node --test"
+  }
 }
-

@@ -15,8 +15,14 @@
 11. รันระบบเก่าและใหม่คู่กันอย่างน้อย 7 วัน และเก็บระบบเก่า read-only 30 วันหลัง cutover
 12. Production ต้องพิสูจน์ว่า `source = accepted + duplicate + quarantine` ทุก resource
 13. Quarantine ต้องไม่เกิน 1% เว้นแต่ผู้ใช้อนุมัติเป็นกรณีพิเศษ
-
 ห้ามเปลี่ยนข้อตกลงเหล่านี้โดยไม่มีการอนุมัติจากผู้ใช้
+
+## Observed source constraint
+
+- `opend.data.go.th/get-ckan` และ `data.go.th/api/3/action` ตอบ HTTP 403 เมื่อเรียกจาก Cloudflare Worker แม้เรียกจากเครื่องผู้ดูแลได้ปกติ
+- URL ดาวน์โหลด CSV สาธารณะตอบ HTTP 206 จาก Cloudflare Worker และรองรับ byte range; resource ตัวอย่างมีขนาด 626,564,320 bytes
+- ดังนั้น catalog discovery ต้องผ่าน trusted relay นอก Cloudflare ส่วน raw CSV capture และ storage ยังทำบน Cloudflare ได้
+- ยังไม่เลือก relay ถาวรและยังไม่เปิด cron จนกว่าจะพิสูจน์เส้นทางนี้ครบ
 
 ## Resource names
 
@@ -35,4 +41,3 @@
 - session cookie ต้องเป็น `HttpOnly`, `Secure`, `SameSite=Lax`
 - staging/production ใช้ secret และ storage แยกกัน
 - ระบบใหม่ห้ามแก้หรือลบระบบเดิมระหว่าง rebuild
-

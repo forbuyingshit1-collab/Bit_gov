@@ -22,10 +22,11 @@ max_batch_size = 10
 max_batch_timeout = 5
 max_retries = 3
 
-[triggers]
 # Cloudflare cron ใช้ UTC: 23:00 UTC = 06:00 Asia/Bangkok
 # Saturday 19:00 UTC = Sunday 02:00 Asia/Bangkok
-crons = ["0 23 * * *", "0 19 * * 6"]
+# ยังไม่เปิด triggers จนกว่า smoke capture และ row accounting จะผ่าน
+# [triggers]
+# crons = ["0 23 * * *", "0 19 * * 6"]
 
 [vars]
 APP_ENV = "staging"

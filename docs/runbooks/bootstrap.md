@@ -30,5 +30,8 @@ Do not run database migrations, start ingestion or deploy production before reso
 - Vercel `bit-gov-dashboard`: project linked and Preview deployed from CLI
 - Git auto-deploy: waiting for the Vercel GitHub App to be granted access to `forbuyingshit1-collab/Bit_gov`
 - Vercel Deployment Protection remains enabled until application PIN protection is implemented and verified
+- D1 migration `0002_ingestion_pages.sql`: applied and verified on staging
+- Ingestion Worker: deployed with D1/R2/Queue bindings and secrets; cron intentionally disabled
+- Source probe: CKAN API is blocked from Cloudflare (HTTP 403), while direct CSV range download succeeds (HTTP 206)
 
 The checked-in Wrangler configuration contains resource IDs only. It must never contain an API token, source API key, PIN, or PIN hash.
