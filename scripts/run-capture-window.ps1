@@ -13,7 +13,7 @@ foreach ($name in 'DATA_GO_TH_API_KEY','INGESTION_CONTROL_TOKEN','INGESTION_WORK
   Set-Item -Path "Env:$name" -Value $value
 }
 
-$env:FISCAL_YEARS = $env:FISCAL_YEARS ?? '2565:2568'
+if ([string]::IsNullOrWhiteSpace($env:FISCAL_YEARS)) { $env:FISCAL_YEARS = '2565:2568' }
 $env:LOCAL_UPLOAD = '1'
 $env:CAPTURE_BYTES = '1048576'
 $env:MAX_CHUNKS = '1'
