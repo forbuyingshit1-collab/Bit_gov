@@ -155,7 +155,7 @@ async function handleCatalogSync(message, env) {
   }
 }
 
-async function seedCatalogResource({ fiscalYear, resource, testMode = false, chunkBytes, stopAfterChunk }, env) {
+async function seedCatalogResource({ fiscalYear, resource, testMode = false, chunkBytes, stopAfterChunk, direct = false }, env) {
   assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
   if (!resource || typeof resource.id !== "string") throw new Error("seed resource id is required");
   const resourceUrl = validatedResourceUrl(resource.url);
@@ -185,12 +185,14 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
        VALUES (?, ?, ?, 'running', ?, 0, 0, 0, 0, '0')`,
     ).bind(runId, resourceDbId, testMode ? "smoke_capture" : "raw_capture", now),
   ]);
-  await env.INGESTION_QUEUE.send({
+  const captureMessage = {
     type: "capture_csv_range", runId, resourceDbId, resourceId: resource.id, resourceUrl,
     fiscalYear, sourceVersion, rangeStart: 0,
     chunkBytes: chunkBytes ?? DEFAULT_CSV_CHUNK_BYTES,
     stopAfterChunk: stopAfterChunk === true, schemaVersion: 1,
-  });
+  };
+  if (direct) await handleCaptureCsvRange(captureMessage, env);
+  else await env.INGESTION_QUEUE.send(captureMessage);
   return runId;
 }
 
