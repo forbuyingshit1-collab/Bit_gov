@@ -43,6 +43,7 @@ async function ckanAction(action, params) {
 
 export async function GET(request) {
   if (!process.env.CATALOG_RELAY_TOKEN) return json({ error: "relay_not_configured" }, 503);
+  if (!process.env.DATA_GO_TH_API_KEY) return json({ error: "source_api_not_configured" }, 503);
   if (!isAuthorized(request)) return json({ error: "unauthorized" }, 401);
 
   const { searchParams } = new URL(request.url);
