@@ -159,7 +159,7 @@ catalog: for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1
         run_id: remote.id, nextRangeStart: Number(remote.checkpoint || 0),
       } : { run_id: (await seed({ fiscalYear, resource, localUpload: true })).run_id, nextRangeStart: 0 });
       let nextRangeStart = started.nextRangeStart;
-      let workingChunkBytes = started.chunkBytes ?? captureBytes;
+      let workingChunkBytes = process.env.DIRECT_R2 === "1" ? captureBytes : started.chunkBytes ?? captureBytes;
       let chunks = 0;
       let uploaded;
       try {

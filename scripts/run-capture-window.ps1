@@ -16,7 +16,7 @@ foreach ($name in 'DATA_GO_TH_API_KEY','INGESTION_CONTROL_TOKEN','INGESTION_WORK
 if ([string]::IsNullOrWhiteSpace($env:FISCAL_YEARS)) { $env:FISCAL_YEARS = '2565:2568' }
 $env:LOCAL_UPLOAD = '1'
 $env:DIRECT_R2 = '1'
-$env:CAPTURE_BYTES = '1048576'
+$env:CAPTURE_BYTES = '8388608'
 $env:MAX_CHUNKS = '1'
 $env:RESOURCE_LIMIT = '1'
 $env:CHUNK_DELAY_MS = '15000'
