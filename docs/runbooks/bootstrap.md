@@ -24,14 +24,15 @@ Do not run database migrations, start ingestion or deploy production before reso
 ## Staging resource status
 
 - D1 `bit-gov-staging`: created and migrated 4 September 2026 (APAC); 21 tables and 7 views verified
-- Queue `bit-gov-ingestion-staging`: created 4 September 2026; consumer is not deployed yet
+- Queue `bit-gov-ingestion-staging`: created and bound to the deployed ingestion consumer
 - R2 `bit-gov-raw-staging`: created 4 September 2026; ingestion binding configured
 - API Worker `bit-gov-api-staging`: deployed; first-time `workers.dev` TLS/DNS activation pending verification
-- Vercel `bit-gov-dashboard`: project linked and Preview deployed from CLI
-- Git auto-deploy: waiting for the Vercel GitHub App to be granted access to `forbuyingshit1-collab/Bit_gov`
-- Vercel Deployment Protection remains enabled until application PIN protection is implemented and verified
+- Vercel `bit-gov-dashboard`: Git-linked under team `IQOA`; Production deploy from `main` is active
+- Application PIN protection is implemented with server-only hashed configuration
 - D1 migration `0002_ingestion_pages.sql`: applied and verified on staging
 - Ingestion Worker: deployed with D1/R2/Queue bindings and secrets; cron intentionally disabled
-- Source probe: CKAN API is blocked from Cloudflare (HTTP 403), while direct CSV range download succeeds (HTTP 206)
+- Source probe: CKAN API is blocked from Cloudflare and Vercel (HTTP 403), while direct CSV range download succeeds (HTTP 206)
+- Local metadata bridge: `scripts/seed-catalog.mjs` discovers resources using the Data.go API-key gateway then posts allowlisted metadata to the control-token-protected ingestion endpoint. It never uploads raw CSV or writes a secret file.
+- Smoke capture: one FY2568 CSV object was written to R2 and verified at 1 MiB; queued bulk work remains disabled pending queue diagnostic and row accounting.
 
 The checked-in Wrangler configuration contains resource IDs only. It must never contain an API token, source API key, PIN, or PIN hash.

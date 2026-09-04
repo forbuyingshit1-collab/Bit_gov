@@ -21,8 +21,10 @@
 
 - `opend.data.go.th/get-ckan` และ `data.go.th/api/3/action` ตอบ HTTP 403 เมื่อเรียกจาก Cloudflare Worker แม้เรียกจากเครื่องผู้ดูแลได้ปกติ
 - URL ดาวน์โหลด CSV สาธารณะตอบ HTTP 206 จาก Cloudflare Worker และรองรับ byte range; resource ตัวอย่างมีขนาด 626,564,320 bytes
-- ดังนั้น catalog discovery ต้องผ่าน trusted relay นอก Cloudflare ส่วน raw CSV capture และ storage ยังทำบน Cloudflare ได้
-- ยังไม่เลือก relay ถาวรและยังไม่เปิด cron จนกว่าจะพิสูจน์เส้นทางนี้ครบ
+- Vercel ก็ถูกต้นทางตอบ HTTP 403 เช่นกัน แม้ส่ง API key ที่เก็บเป็น server secret; จึงไม่ใช้ Vercel เป็นตัวดึง catalog
+- ใช้ local metadata bridge (`scripts/seed-catalog.mjs`) บนเครื่องผู้ดูแลที่ API gateway ยอมรับ: bridge ส่งเฉพาะ metadata ของ resource ที่ allowlist แล้วผ่าน endpoint ที่มี control token; Cloudflare ดึง CSV สาธารณะ เก็บ R2 และประมวลผลต่อเอง
+- Smoke run วันที่ 4 กันยายน 2569 ยืนยัน D1 checkpoint ที่ byte `1,048,576` และอ่าน R2 object ขนาด `1,048,576` bytes ได้จริง
+- ยังไม่เปิด cron จนกว่าจะพิสูจน์ queue consumption, row accounting และ full-resource resume ครบ
 
 ## Resource names
 
