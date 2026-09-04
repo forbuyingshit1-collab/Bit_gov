@@ -17,7 +17,6 @@
 
 ## Status
 
-Phase 0: repository bootstrap. ยังไม่เชื่อม production resource และยังไม่ย้ายข้อมูลจากระบบเดิม
+Phase 1: staging foundation. เชื่อม D1, Queue, API Worker และ Vercel project แล้ว แต่ยังไม่ย้ายข้อมูลจากระบบเดิมหรือเปิด scheduled ingestion
 
 อ่าน [Architecture decisions](docs/architecture/decisions.md) และ [Bootstrap runbook](docs/runbooks/bootstrap.md) ก่อนเริ่มงาน
-

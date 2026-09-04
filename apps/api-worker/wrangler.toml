@@ -1,0 +1,12 @@
+name = "bit-gov-api-staging"
+main = "src/index.js"
+compatibility_date = "2026-09-04"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bit-gov-staging"
+database_id = "6495f838-c818-4426-9594-77e82fc4ab98"
+migrations_dir = "../../packages/database/migrations"
+
+[vars]
+APP_ENV = "staging"

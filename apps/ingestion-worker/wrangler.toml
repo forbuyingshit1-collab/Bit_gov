@@ -1,0 +1,27 @@
+name = "bit-gov-ingestion-staging"
+main = "src/index.js"
+compatibility_date = "2026-09-04"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bit-gov-staging"
+database_id = "6495f838-c818-4426-9594-77e82fc4ab98"
+migrations_dir = "../../packages/database/migrations"
+
+[[queues.producers]]
+binding = "INGESTION_QUEUE"
+queue = "bit-gov-ingestion-staging"
+
+[[queues.consumers]]
+queue = "bit-gov-ingestion-staging"
+max_batch_size = 10
+max_batch_timeout = 5
+max_retries = 3
+
+[triggers]
+# Cloudflare cron ใช้ UTC: 23:00 UTC = 06:00 Asia/Bangkok
+# Saturday 19:00 UTC = Sunday 02:00 Asia/Bangkok
+crons = ["0 23 * * *", "0 19 * * 6"]
+
+[vars]
+APP_ENV = "staging"

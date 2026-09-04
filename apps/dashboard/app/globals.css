@@ -1,0 +1,48 @@
+:root {
+  color-scheme: light;
+  font-family: Tahoma, "Noto Sans Thai", system-ui, sans-serif;
+  color: #0b2545;
+  background: #f6f8fb;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; background: #f6f8fb; }
+
+main { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 56px 0 80px; }
+
+header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+
+.eyebrow { margin: 0 0 8px; color: #27659b; font-size: 15px; font-weight: 700; letter-spacing: .04em; }
+
+h1 { margin: 0; font-size: clamp(30px, 5vw, 48px); line-height: 1.15; }
+
+.subtitle { margin: 12px 0 0; color: #50647a; font-size: 18px; }
+
+.status { display: inline-flex; min-height: 44px; align-items: center; padding: 10px 16px; border-radius: 999px; font-weight: 700; white-space: nowrap; }
+.status.ready { color: #146c43; background: #e8f7ef; }
+.status.pending { color: #815500; background: #fff4d8; }
+
+.notice { display: flex; flex-direction: column; gap: 5px; padding: 18px 20px; border: 1px solid #b9cbe0; border-radius: 16px; background: #eaf2fa; }
+.notice span { color: #40566e; }
+
+.metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-top: 24px; }
+.metrics article, .next { border: 1px solid #d3deea; border-radius: 18px; background: white; box-shadow: 0 5px 18px rgba(20, 50, 80, .04); }
+.metrics article { display: flex; flex-direction: column; min-height: 170px; padding: 24px; }
+.metrics span { font-size: 17px; font-weight: 700; }
+.metrics strong { margin: 18px 0 8px; font-size: 40px; }
+.metrics small { color: #607287; font-size: 15px; }
+
+.next { margin-top: 24px; padding: 24px 28px; }
+.next h2 { margin: 0 0 18px; font-size: 24px; }
+.next ol { display: grid; gap: 12px; margin: 0; padding-left: 28px; font-size: 17px; }
+.next li { padding-left: 6px; color: #66778a; }
+.next li.done { color: #146c43; }
+.next li.active { color: #815500; font-weight: 700; }
+
+@media (max-width: 720px) {
+  main { padding-top: 28px; }
+  header { flex-direction: column; }
+  .metrics { grid-template-columns: 1fr; }
+  .metrics article { min-height: 140px; }
+}

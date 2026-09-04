@@ -21,3 +21,14 @@
 
 Do not run database migrations, start ingestion or deploy production before resource linkage and environment-key verification pass.
 
+## Staging resource status
+
+- D1 `bit-gov-staging`: created and migrated 4 September 2026 (APAC); 21 tables and 7 views verified
+- Queue `bit-gov-ingestion-staging`: created 4 September 2026; consumer is not deployed yet
+- R2 `bit-gov-raw-staging`: waiting for the account owner to enable R2 billing
+- API Worker `bit-gov-api-staging`: deployed; first-time `workers.dev` TLS/DNS activation pending verification
+- Vercel `bit-gov-dashboard`: project linked and Preview deployed from CLI
+- Git auto-deploy: waiting for the Vercel GitHub App to be granted access to `forbuyingshit1-collab/Bit_gov`
+- Vercel Deployment Protection remains enabled until application PIN protection is implemented and verified
+
+The checked-in Wrangler configuration contains resource IDs only. It must never contain an API token, source API key, PIN, or PIN hash.

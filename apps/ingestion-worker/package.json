@@ -2,6 +2,10 @@
   "name": "@bit-gov/ingestion-worker",
   "version": "0.0.0",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "check": "node --check src/index.js",
+    "dev": "wrangler dev --config wrangler.toml",
+    "deploy:staging": "wrangler deploy --config wrangler.toml"
+  }
 }
-
