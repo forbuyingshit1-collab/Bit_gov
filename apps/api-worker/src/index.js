@@ -269,6 +269,77 @@ async function recommendations(db, url) {
   return { methodology: "historical_similarity_v1", warning: "historical_record_not_open_tender_confirmation", items: result.results ?? [] };
 }
 
+async function forecast(db, url) {
+  const companyNames = ["ไอคิวโอเอ โซลูชั่น", "ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี"];
+  const where = [
+    "pm.decision_status IN ('auto_approved', 'approved')",
+    "EXISTS (SELECT 1 FROM location_matches lm WHERE lm.project_id = p.id AND lm.decision_status IN ('auto_approved', 'approved'))",
+  ];
+  const values = [];
+  const selectedProvinces = provinces(url.searchParams.get("provinces"));
+  if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
+  const fiscalYear = optionalNonNegativeInteger(url.searchParams.get("fiscalYear"));
+  if (fiscalYear !== null) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
+  const category = url.searchParams.get("category")?.trim();
+  if (category) { where.push("pm.category = ?"); values.push(category); }
+  const subcategory = url.searchParams.get("subcategory")?.trim();
+  if (subcategory) { where.push("pm.subcategory = ?"); values.push(subcategory); }
+  const query = url.searchParams.get("q")?.trim();
+  if (query) { where.push("(p.title LIKE ? OR p.agency_name LIKE ?)"); values.push(`%${query}%`, `%${query}%`); }
+  const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
+  if (minPrice !== null) { where.push("COALESCE(p.budget_sat, 0) >= ?"); values.push(minPrice); }
+  const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
+  if (maxPrice !== null) { where.push("COALESCE(p.budget_sat, 0) <= ?"); values.push(maxPrice); }
+  const direction = url.searchParams.get("sort") === "oldest" ? "ASC" : "DESC";
+  const currentFiscalYear = new Date().getUTCFullYear() + 543;
+  const result = await db.prepare(
+    `WITH parameters AS (SELECT ? AS current_year),
+     company_profile AS (
+       SELECT DISTINCT pm.category, p.agency_name, p.province
+       FROM projects p
+       JOIN awards a ON a.project_id = p.id
+       JOIN suppliers s ON s.id = a.supplier_id
+       JOIN product_matches pm ON pm.project_id = p.id
+       WHERE s.normalized_name IN (?, ?) AND pm.decision_status IN ('auto_approved', 'approved')
+     ), eligible AS (
+       SELECT p.id, p.title, p.agency_name, p.province, p.fiscal_year, p.budget_sat, pm.category, pm.subcategory
+       FROM projects p JOIN product_matches pm ON pm.project_id = p.id
+       WHERE ${where.join(" AND ")}
+         AND EXISTS (SELECT 1 FROM company_profile cp WHERE cp.category = pm.category)
+     ), agency_history AS (
+       SELECT agency_name, province, category, subcategory,
+         MAX(fiscal_year) AS last_fiscal_year, COUNT(DISTINCT id) AS historical_projects,
+         CAST(AVG(COALESCE(budget_sat, 0)) AS INTEGER) AS estimated_budget_sat,
+         MAX(title) AS example_project
+       FROM eligible GROUP BY agency_name, province, category, subcategory
+     ), scored AS (
+       SELECT h.*, parameters.current_year,
+         CASE h.category WHEN 'เครื่องพิมพ์' THEN 3 ELSE 5 END AS replacement_cycle_years,
+         45
+         + 20 * EXISTS (SELECT 1 FROM company_profile cp WHERE cp.agency_name = h.agency_name)
+         + 15 * EXISTS (SELECT 1 FROM company_profile cp WHERE cp.province = h.province)
+         + 10 * (h.historical_projects >= 2)
+         + 10 * (parameters.current_year - h.last_fiscal_year >= 1) AS opportunity_score
+       FROM agency_history h CROSS JOIN parameters
+     )
+     SELECT *,
+       CASE WHEN current_year - last_fiscal_year >= replacement_cycle_years
+         THEN 'ครุภัณฑ์ทดแทน/จัดหาใหม่' ELSE 'บำรุงรักษาและต่ออายุระบบ' END AS predicted_need,
+       CASE WHEN last_fiscal_year >= current_year THEN current_year + 1 ELSE current_year END AS expected_fiscal_year,
+       CASE WHEN opportunity_score >= 75 THEN 'สูง' WHEN opportunity_score >= 60 THEN 'กลาง' ELSE 'ต่ำ' END AS opportunity_level
+     FROM scored
+     WHERE last_fiscal_year >= current_year - replacement_cycle_years - 1
+     ORDER BY opportunity_score DESC, last_fiscal_year ${direction}, agency_name
+     LIMIT 25`,
+  ).bind(currentFiscalYear, ...companyNames, ...values).all();
+  return {
+    methodology: "asset_lifecycle_and_company_fit_v1",
+    warning: "forecast_not_open_tender_confirmation",
+    generated_for_fiscal_year: currentFiscalYear,
+    items: result.results ?? [],
+  };
+}
+
 async function reviewQueue(db, url) {
   const limit = positiveInteger(url.searchParams.get("limit"), 25, 100);
   const pending = `EXISTS (SELECT 1 FROM product_matches x WHERE x.project_id = p.id AND x.decision_status = 'pending_review')
@@ -356,6 +427,9 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/recommendations") {
       return json(await recommendations(env.DB, url));
+    }
+    if (request.method === "GET" && url.pathname === "/v1/forecast") {
+      return json(await forecast(env.DB, url));
     }
     if (request.method === "GET" && url.pathname === "/v1/review-queue") {
       return json(await reviewQueue(env.DB, url));

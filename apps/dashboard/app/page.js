@@ -132,6 +132,23 @@ async function loadRecommendations(filters) {
   } catch { return { items: [] }; }
 }
 
+async function loadForecast(filters) {
+  if (!apiUrl) return { items: [] };
+  const url = new URL("/v1/forecast", apiUrl);
+  if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
+  if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
+  if (filters.category) url.searchParams.set("category", filters.category);
+  if (filters.subcategory) url.searchParams.set("subcategory", filters.subcategory);
+  if (filters.q) url.searchParams.set("q", filters.q);
+  if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
+  if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
+  url.searchParams.set("sort", filters.sort);
+  try {
+    const response = await fetch(url, { cache: "no-store" });
+    return response.ok ? response.json() : { items: [] };
+  } catch { return { items: [] }; }
+}
+
 async function loadReviewQueue() {
   if (!apiUrl) return { total: 0, items: [] };
   try {
@@ -152,7 +169,7 @@ export default async function Home({ searchParams }) {
     minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
     sort: params.sort === "oldest" ? "oldest" : "newest", offset: Math.max(0, Number(params.offset) || 0),
   };
-  const [status, projects, market, companyWork, recommended, reviews] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters), loadReviewQueue()]);
+  const [status, projects, market, companyWork, recommended, forecasted, reviews] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters), loadForecast(filters), loadReviewQueue()]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
   const coverage = status.coverage ?? [];
@@ -178,7 +195,7 @@ export default async function Home({ searchParams }) {
         <div className="header-actions"><span className={`status ${ready ? "ready" : "pending"}`}>{ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}</span><form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form></div>
       </header>
 
-      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#recommended">โครงการแนะนำ</a><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#company-work">ผลงานบริษัท</a>{reviews.total ? <a href="#review-queue">รอตรวจ {number(reviews.total)}</a> : null}</nav>
+      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#recommended">โครงการแนะนำ</a><a href="#forecast">คาดการณ์ความต้องการ</a><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#company-work">ผลงานบริษัท</a>{reviews.total ? <a href="#review-queue">รอตรวจ {number(reviews.total)}</a> : null}</nav>
 
       <section id="overview" className="metrics" aria-label="ภาพรวมข้อมูล">
         <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
@@ -203,6 +220,15 @@ export default async function Home({ searchParams }) {
       <section id="recommended" className="results-section recommended-section">
         <div className="section-heading"><div><h2>โครงการแนะนำ</h2><p>ให้คะแนนจากความคล้ายกับผลงานบริษัทในอดีต ไม่ใช่การยืนยันว่ายังเปิดรับข้อเสนอ</p></div></div>
         {recommended.items?.length ? <div className="recommendation-grid">{recommended.items.slice(0, 6).map((item)=><article className="recommendation-card" key={item.id}><div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}% · โอกาส{item.opportunity_level}</div><h3>{item.title}</h3><p>{item.agency_name || "ไม่ระบุหน่วยงาน"} · {item.province || "ไม่ระบุจังหวัด"}</p><div className="project-tags"><span>{item.category}</span>{item.subcategory ? <span>{item.subcategory}</span> : null}<span>{money(item.budget_sat)}</span></div></article>)}</div> : <div className="empty-state"><strong>กำลังสร้างฐานเปรียบเทียบ</strong><span>คำแนะนำจะเริ่มแสดงเมื่อมีทั้งประวัติบริษัทและโครงการตลาดใน D1</span></div>}
+      </section>
+
+      <section id="forecast" className="results-section forecast-section">
+        <div className="section-heading"><div><h2>คาดการณ์หน่วยงานที่อาจมีความต้องการ</h2><p>วิเคราะห์อายุครุภัณฑ์ ประวัติซื้อซ้ำ และความใกล้เคียงกับผลงานบริษัท ไม่ใช่ประกาศเปิดประมูล</p></div></div>
+        {forecasted.items?.length ? <div className="forecast-grid">{forecasted.items.slice(0, 8).map((item) => <article key={`${item.agency_name}|${item.category}|${item.subcategory}`}>
+          <div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}% · โอกาส{item.opportunity_level}</div>
+          <h3>{item.agency_name || "ไม่ระบุหน่วยงาน"}</h3><p>{item.province || "ไม่ระบุจังหวัด"} · คาดปี {item.expected_fiscal_year}</p>
+          <strong>{item.predicted_need}</strong><div className="project-tags"><span>{item.category}</span>{item.subcategory ? <span>{item.subcategory}</span> : null}<span>ฐานเดิม {number(item.historical_projects)} โครงการ</span><span>เฉลี่ย {shortMoney(item.estimated_budget_sat)} บาท</span></div>
+        </article>)}</div> : <div className="empty-state"><strong>กำลังสร้างแบบจำลองจากประวัติจริง</strong><span>จะเริ่มคาดการณ์เมื่อมีผลงานบริษัทและประวัติโครงการของหน่วยงานใน D1</span></div>}
       </section>
 
       <section id="search" className="filter-panel">

@@ -128,6 +128,12 @@ td small { margin-top: 5px; color: #697c8f; line-height: 1.4; }
 .score-สูง { color: #12603c; background: #dff5e8; }
 .score-กลาง { color: #7a5200; background: #fff0c7; }
 .score-ต่ำ { color: #6b7280; background: #edf0f3; }
+.forecast-section { border-top: 5px solid #7a4af0; }
+.forecast-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.forecast-grid article { padding: 19px; border: 1px solid #d6e0ea; border-radius: 15px; background: #fff; }
+.forecast-grid h3 { margin: 12px 0 5px; font-size: 19px; }
+.forecast-grid p { margin: 0 0 13px; color: #607287; }
+.forecast-grid article > strong { display: block; margin-bottom: 13px; color: #47309b; }
 .review-section { border-top: 5px solid #d58a19; }
 .review-list { display: grid; gap: 12px; }
 .review-list article { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px; border: 1px solid #d7e1ea; border-radius: 13px; }
@@ -164,5 +170,6 @@ td small { margin-top: 5px; color: #697c8f; line-height: 1.4; }
   .pagination > :last-child { justify-self: stretch; }
   .company-metrics { grid-template-columns: 1fr; }
   .recommendation-grid { grid-template-columns: 1fr; }
+  .forecast-grid { grid-template-columns: 1fr; }
   .review-list article { align-items: start; flex-direction: column; }
 }
