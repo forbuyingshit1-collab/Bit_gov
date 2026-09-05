@@ -372,6 +372,14 @@ async function existingRawRecordIds(db, ids) {
   return new Set((result.results ?? []).map(({ id }) => id));
 }
 
+export function projectNaturalIdentity(project, fiscalYear, fingerprint) {
+  return project.projectCode ? `${fiscalYear}|${project.projectCode}` : `${fiscalYear}|fallback|${fingerprint}`;
+}
+
+export function contractNaturalIdentity(projectId, contract, fingerprint) {
+  return contract.contractNumber ? `${projectId}|${contract.contractNumber}` : `${projectId}|fallback|${fingerprint}`;
+}
+
 async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVersion, records }, env) {
   assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
   if (!Array.isArray(records) || records.length === 0 || records.length > 100) {
@@ -413,9 +421,9 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
       continue;
     }
     acceptedCount += 1;
-    const projectId = `project:${fingerprint}`;
     const project = normalized.project;
     const contract = normalized.contract;
+    const projectId = `project:${await sha256Hex(projectNaturalIdentity(project, fiscalYear, fingerprint))}`;
     statements.push(
       env.DB.prepare(
         `INSERT INTO raw_records (id, resource_id, sync_run_id, source_record_id, fingerprint, r2_object_key, payload_checksum, observed_at)
@@ -424,18 +432,36 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
       env.DB.prepare(
         `INSERT INTO projects (id, project_code, title, description, agency_name, department_name, province, fiscal_year,
           announcement_date_raw, announcement_date_iso, budget_sat, reference_price_sat, source_url, first_seen_at, last_seen_at, raw_record_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           title = excluded.title,
+           description = COALESCE(excluded.description, projects.description),
+           agency_name = COALESCE(excluded.agency_name, projects.agency_name),
+           department_name = COALESCE(excluded.department_name, projects.department_name),
+           province = COALESCE(excluded.province, projects.province),
+           announcement_date_raw = COALESCE(excluded.announcement_date_raw, projects.announcement_date_raw),
+           announcement_date_iso = COALESCE(excluded.announcement_date_iso, projects.announcement_date_iso),
+           budget_sat = COALESCE(excluded.budget_sat, projects.budget_sat),
+           reference_price_sat = COALESCE(excluded.reference_price_sat, projects.reference_price_sat),
+           last_seen_at = excluded.last_seen_at`,
       ).bind(projectId, project.projectCode, project.title, project.description, project.agencyName, project.departmentName,
         normalized.locationMatch?.province ?? null, fiscalYear, project.announcementDateRaw, project.announcementDateIso,
         project.budgetSat, project.referencePriceSat, null, observedAt, observedAt, rawId),
     );
 
     const hasContract = contract.contractNumber || contract.contractDateRaw || contract.winningPriceSat !== null;
-    const contractId = hasContract ? `contract:${fingerprint}` : null;
+    const contractId = hasContract ? `contract:${await sha256Hex(contractNaturalIdentity(projectId, contract, fingerprint))}` : null;
     if (contractId) statements.push(env.DB.prepare(
       `INSERT INTO contracts (id, project_id, contract_number, contract_date_raw, contract_date_iso, agreed_price_sat,
         contract_price_sat, winning_price_sat, winning_price_source, source_url, raw_record_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         contract_date_raw = COALESCE(excluded.contract_date_raw, contracts.contract_date_raw),
+         contract_date_iso = COALESCE(excluded.contract_date_iso, contracts.contract_date_iso),
+         agreed_price_sat = COALESCE(excluded.agreed_price_sat, contracts.agreed_price_sat),
+         contract_price_sat = COALESCE(excluded.contract_price_sat, contracts.contract_price_sat),
+         winning_price_sat = COALESCE(excluded.winning_price_sat, contracts.winning_price_sat),
+         winning_price_source = COALESCE(excluded.winning_price_source, contracts.winning_price_source)`,
     ).bind(contractId, projectId, contract.contractNumber, contract.contractDateRaw, contract.contractDateIso,
       contract.agreedPriceSat, contract.contractPriceSat, contract.winningPriceSat, contract.winningPriceSource, rawId));
 
@@ -447,18 +473,18 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
            ON CONFLICT(normalized_name) DO UPDATE SET name = excluded.name, tax_id = COALESCE(excluded.tax_id, suppliers.tax_id)`,
         ).bind(supplierId, normalized.supplier.taxId, normalized.supplier.name, normalized.supplier.normalizedName),
         env.DB.prepare(
-          `INSERT INTO awards (id, project_id, contract_id, supplier_id, award_date_raw, award_date_iso, winning_price_sat, raw_record_id)
+          `INSERT OR IGNORE INTO awards (id, project_id, contract_id, supplier_id, award_date_raw, award_date_iso, winning_price_sat, raw_record_id)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         ).bind(`award:${fingerprint}`, projectId, contractId, supplierId, contract.contractDateRaw, contract.contractDateIso, contract.winningPriceSat, rawId),
       );
     }
     if (normalized.productMatch) statements.push(env.DB.prepare(
-      `INSERT INTO product_matches (id, project_id, category, subcategory, confidence, match_reason, rules_version, decision_status)
+      `INSERT OR IGNORE INTO product_matches (id, project_id, category, subcategory, confidence, match_reason, rules_version, decision_status)
        VALUES (?, ?, ?, ?, ?, ?, 'v2', ?)`,
     ).bind(`product:${fingerprint}`, projectId, normalized.productMatch.category, normalized.productMatch.subcategory, normalized.productMatch.confidence,
       normalized.productMatch.reason, normalized.productMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
     if (normalized.locationMatch) statements.push(env.DB.prepare(
-      `INSERT INTO location_matches (id, project_id, province, confidence, match_reason, decision_status)
+      `INSERT OR IGNORE INTO location_matches (id, project_id, province, confidence, match_reason, decision_status)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).bind(`location:${fingerprint}`, projectId, normalized.locationMatch.province, normalized.locationMatch.confidence,
       normalized.locationMatch.reason, normalized.locationMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
