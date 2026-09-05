@@ -11,6 +11,7 @@ Run PowerShell as the intended Windows user:
 ```
 
 The task runs daily at 01:30, starts when a missed schedule becomes available, waits for network access, can run on battery, restarts up to three times after transient failure, and resumes from gitignored checkpoints.
+Each run writes a secret-free operational transcript under `.bit-gov-logs/`; logs older than 14 days are removed automatically.
 
 ## Inspect without exposing secrets
 

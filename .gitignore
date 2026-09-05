@@ -20,6 +20,7 @@ raw/
 .bit-gov-capture-state.json
 .bit-gov-completed-captures.json
 .bit-gov-normalization-state.json
+.bit-gov-logs/
 
 *.log
 .DS_Store

@@ -1,11 +1,20 @@
 param(
   [int]$WindowMinutes = 330,
-  [int]$PauseSeconds = 35
+  [int]$PauseSeconds = 10
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
+$logDirectory = Join-Path $root '.bit-gov-logs'
+New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+$logPath = Join-Path $logDirectory ("capture-{0}.log" -f (Get-Date -Format 'yyyyMMdd-HHmmss'))
+Get-ChildItem -LiteralPath $logDirectory -Filter 'capture-*.log' -File |
+  Where-Object LastWriteTime -lt (Get-Date).AddDays(-14) |
+  Remove-Item -Force
+Start-Transcript -LiteralPath $logPath | Out-Null
+
+try {
 
 foreach ($name in 'DATA_GO_TH_API_KEY','INGESTION_CONTROL_TOKEN','INGESTION_WORKER_URL') {
   $value = [Environment]::GetEnvironmentVariable($name, 'User')
@@ -17,7 +26,7 @@ if ([string]::IsNullOrWhiteSpace($env:FISCAL_YEARS)) { $env:FISCAL_YEARS = '2565
 $env:LOCAL_UPLOAD = '1'
 $env:DIRECT_R2 = '1'
 $env:CAPTURE_BYTES = '8388608'
-$env:MAX_CHUNKS = '1'
+$env:MAX_CHUNKS = '8'
 $env:RESOURCE_LIMIT = '1'
 $env:CHUNK_DELAY_MS = '15000'
 $deadline = (Get-Date).AddMinutes($WindowMinutes)
@@ -34,7 +43,8 @@ function Invoke-NormalizationSlice {
   $env:FISCAL_YEAR = [string]$entry.fiscalYear
   $env:SOURCE_VERSION = $entry.sourceVersion
   $env:SOURCE_CSV_URL = $entry.sourceUrl
-  $env:NORMALIZE_MAX_ROWS = '5000'
+  $env:NORMALIZE_BATCH_SIZE = '100'
+  $env:NORMALIZE_MAX_ROWS = '50000'
   node scripts/normalize-csv.mjs
   if ($LASTEXITCODE -ne 0) { throw "Normalization runner stopped with exit code $LASTEXITCODE" }
   $normalizationPath = Join-Path $root '.bit-gov-normalization-state.json'
@@ -50,4 +60,7 @@ while ((Get-Date) -lt $deadline) {
   node scripts/seed-catalog.mjs
   if ($LASTEXITCODE -ne 0) { throw "Capture runner stopped with exit code $LASTEXITCODE" }
   Start-Sleep -Seconds $PauseSeconds
+}
+} finally {
+  Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 }
