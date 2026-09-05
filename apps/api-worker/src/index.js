@@ -45,13 +45,14 @@ async function status(db) {
   const requestedFiscalYears = [2565, 2566, 2567, 2568, 2569];
   const coverage = requestedFiscalYears.map((fiscalYear) => {
     const yearResources = resources.filter((resource) => resource.fiscal_year === fiscalYear);
+    const measuredResources = yearResources.filter((resource) => resource.capture_percent !== null);
     return {
       fiscal_year: fiscalYear,
       resource_count: yearResources.length,
       completed_resources: yearResources.filter((resource) => resource.status === "succeeded").length,
       normalized_rows: yearResources.reduce((sum, resource) => sum + (resource.normalized_rows ?? 0), 0),
-      capture_percent: yearResources.length
-        ? Math.round((yearResources.reduce((sum, resource) => sum + (resource.capture_percent ?? 0), 0) / yearResources.length) * 10) / 10
+      capture_percent: measuredResources.length
+        ? Math.round((measuredResources.reduce((sum, resource) => sum + resource.capture_percent, 0) / yearResources.length) * 10) / 10
         : null,
       state: yearResources.length === 0 ? "source_unavailable"
         : yearResources.every((resource) => resource.status === "succeeded") ? "captured"
