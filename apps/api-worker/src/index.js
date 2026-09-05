@@ -8,24 +8,57 @@ const json = (body, status = 200) =>
   });
 
 async function status(db) {
-  const latestRun = await db
-    .prepare(
+  const [latestRun, totals, coverageResult] = await Promise.all([
+    db.prepare(
       `SELECT id, run_type, status, started_at, finished_at,
-              source_count, accepted_count, duplicate_count, quarantine_count
+              source_count, accepted_count, duplicate_count, quarantine_count,
+              CAST(checkpoint AS INTEGER) AS checkpoint_bytes, total_bytes
        FROM sync_runs ORDER BY started_at DESC LIMIT 1`,
-    )
-    .first();
-
-  const totals = await db
-    .prepare(
+    ).first(),
+    db.prepare(
       `SELECT
          (SELECT COUNT(*) FROM projects) AS projects,
          (SELECT COUNT(*) FROM contracts) AS contracts,
          (SELECT COUNT(*) FROM ingestion_errors WHERE resolved_at IS NULL) AS unresolved_errors`,
-    )
-    .first();
+    ).first(),
+    db.prepare(
+      `SELECT sr.fiscal_year, sr.source_last_modified, sr.last_seen_at,
+              r.status, r.started_at, r.finished_at,
+              CAST(r.checkpoint AS INTEGER) AS checkpoint_bytes, r.total_bytes,
+              r.source_count AS normalized_rows, r.accepted_count, r.quarantine_count
+         FROM source_resources sr
+         LEFT JOIN sync_runs r ON r.id = (
+           SELECT x.id FROM sync_runs x
+            WHERE x.resource_id = sr.id AND x.run_type = 'local_raw_capture'
+            ORDER BY x.started_at DESC LIMIT 1
+         )
+        ORDER BY sr.fiscal_year DESC, sr.external_id`,
+    ).all(),
+  ]);
 
-  return { environment: "staging", latestRun, totals };
+  const resources = (coverageResult.results ?? []).map((resource) => ({
+    ...resource,
+    capture_percent: resource.total_bytes > 0
+      ? Math.min(100, Math.round((resource.checkpoint_bytes / resource.total_bytes) * 1000) / 10)
+      : null,
+  }));
+  const requestedFiscalYears = [2565, 2566, 2567, 2568, 2569];
+  const coverage = requestedFiscalYears.map((fiscalYear) => {
+    const yearResources = resources.filter((resource) => resource.fiscal_year === fiscalYear);
+    return {
+      fiscal_year: fiscalYear,
+      resource_count: yearResources.length,
+      completed_resources: yearResources.filter((resource) => resource.status === "succeeded").length,
+      normalized_rows: yearResources.reduce((sum, resource) => sum + (resource.normalized_rows ?? 0), 0),
+      capture_percent: yearResources.length
+        ? Math.round((yearResources.reduce((sum, resource) => sum + (resource.capture_percent ?? 0), 0) / yearResources.length) * 10) / 10
+        : null,
+      state: yearResources.length === 0 ? "source_unavailable"
+        : yearResources.every((resource) => resource.status === "succeeded") ? "captured"
+          : yearResources.some((resource) => resource.status === "running") ? "capturing" : "incomplete",
+    };
+  });
+  return { environment: "staging", latestRun, totals, coverage, resources };
 }
 
 function positiveInteger(value, fallback, maximum) {

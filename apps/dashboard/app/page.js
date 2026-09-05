@@ -31,6 +31,14 @@ function shortMoney(satang) {
   return new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 }).format(baht);
 }
 
+function coverageLabel(item) {
+  if (item.state === "source_unavailable") return "ยังไม่พบชุดข้อมูลทางการ";
+  if (item.normalized_rows > 0) return `นำเข้าวิเคราะห์แล้ว ${number(item.normalized_rows)} แถว`;
+  if (item.state === "captured") return "เก็บไฟล์ต้นฉบับครบแล้ว กำลังรอแปลงข้อมูล";
+  if (item.capture_percent !== null) return `กำลังเก็บไฟล์ต้นฉบับ ${number(item.capture_percent)}%`;
+  return "พบแหล่งข้อมูลแล้ว กำลังเตรียมนำเข้า";
+}
+
 function BarChart({ title, rows, tone = "blue" }) {
   const maximum = Math.max(1, ...rows.map((row) => row.budget_sat ?? 0));
   return <article className="chart-card"><h2>{title}</h2>{rows.length ? <div className="bar-chart">{rows.slice(0, 8).map((row) => <div className="bar-row" key={row.label ?? "unknown"}>
@@ -114,6 +122,7 @@ export default async function Home({ searchParams }) {
   const [status, projects, market, companyWork, recommended] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters)]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
+  const coverage = status.coverage ?? [];
   const exportParams = new URLSearchParams();
   if (filters.q) exportParams.set("q", filters.q);
   if (filters.provinces.length) exportParams.set("provinces", filters.provinces.join(","));
@@ -141,6 +150,14 @@ export default async function Home({ searchParams }) {
         <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
         <article><span>สัญญา</span><strong>{number(totals.contracts)}</strong><small>พร้อมวิเคราะห์ผู้ชนะและราคา</small></article>
         <article><span>รายการต้องตรวจ</span><strong>{number(totals.unresolved_errors)}</strong><small>ไม่นำมาปะปนในรายงานหลัก</small></article>
+      </section>
+
+      <section className="coverage-card" aria-labelledby="coverage-title">
+        <div className="section-heading"><div><h2 id="coverage-title">สถานะข้อมูลแต่ละปี</h2><p>แยกสถานะไฟล์ต้นฉบับออกจากข้อมูลที่พร้อมวิเคราะห์ เพื่อไม่ให้จำนวนบน Dashboard ทำให้เข้าใจผิด</p></div></div>
+        <div className="coverage-grid">{coverage.length ? coverage.map((item) => <article key={item.fiscal_year} className={`coverage-item coverage-${item.state}`}>
+          <div><strong>ปีงบประมาณ {item.fiscal_year}</strong><span>{coverageLabel(item)}</span></div>
+          {item.capture_percent !== null ? <div className="coverage-track" aria-label={`ความคืบหน้า ${item.capture_percent}%`}><span style={{ width: `${item.capture_percent}%` }} /></div> : null}
+        </article>) : <p className="coverage-loading">กำลังอ่านสถานะการนำเข้าจาก Cloudflare</p>}</div>
       </section>
 
       <section className="charts" aria-label="กราฟสรุปตลาด">

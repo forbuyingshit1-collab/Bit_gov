@@ -268,8 +268,8 @@ async function handleLocalCsvUpload(request, env) {
   }
   await env.DB.prepare(
     `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE NULL END,
-       checkpoint = ? WHERE id = ?`,
-  ).bind(finished ? "succeeded" : "running", finished ? "succeeded" : "running", now, String(nextRangeStart), runId).run();
+       checkpoint = ?, total_bytes = ? WHERE id = ?`,
+  ).bind(finished ? "succeeded" : "running", finished ? "succeeded" : "running", now, String(nextRangeStart), range.total, runId).run();
   return { runId, finished, nextRangeStart, totalBytes: range.total, key };
 }
 
@@ -306,8 +306,8 @@ async function confirmDirectCsvUpload(body, env) {
     }), { httpMetadata: { contentType: "application/json" } });
   }
   await env.DB.prepare(
-    `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE NULL END, checkpoint = ? WHERE id = ?`,
-  ).bind(finished ? "succeeded" : "running", finished ? "succeeded" : "running", now, String(nextRangeStart), runId).run();
+    `UPDATE sync_runs SET status = ?, finished_at = CASE WHEN ? = 'succeeded' THEN ? ELSE NULL END, checkpoint = ?, total_bytes = ? WHERE id = ?`,
+  ).bind(finished ? "succeeded" : "running", finished ? "succeeded" : "running", now, String(nextRangeStart), totalBytes, runId).run();
   return { runId, finished, nextRangeStart, totalBytes, key };
 }
 
@@ -717,7 +717,7 @@ export default {
       if (!resourceId) return Response.json({ error: "resource_id_required" }, { status: 400 });
       assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
       const capture = await env.DB.prepare(
-        `SELECT sync_runs.id, sync_runs.status, sync_runs.checkpoint, sync_runs.started_at, sync_runs.finished_at
+        `SELECT sync_runs.id, sync_runs.status, sync_runs.checkpoint, sync_runs.total_bytes, sync_runs.started_at, sync_runs.finished_at
            FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
           WHERE sr.external_id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'
           ORDER BY sync_runs.started_at DESC LIMIT 1`,
