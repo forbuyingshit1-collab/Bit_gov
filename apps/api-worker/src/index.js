@@ -7,6 +7,20 @@ const json = (body, status = 200) =>
     },
   });
 
+async function secureTokenEqual(received, expected) {
+  if (!received || !expected) return false;
+  const encoder = new TextEncoder();
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", encoder.encode(received)),
+    crypto.subtle.digest("SHA-256", encoder.encode(expected)),
+  ]);
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  for (let index = 0; index < Math.min(leftBytes.length, rightBytes.length); index += 1) difference |= leftBytes[index] ^ rightBytes[index];
+  return difference === 0;
+}
+
 async function status(db) {
   const [latestRun, totals, coverageResult] = await Promise.all([
     db.prepare(
@@ -276,6 +290,36 @@ async function reviewQueue(db, url) {
   return { total: count?.count ?? 0, items: items.results ?? [] };
 }
 
+async function decideReview(db, body) {
+  const projectId = typeof body?.projectId === "string" ? body.projectId : "";
+  const decision = body?.decision;
+  if (!projectId.startsWith("project:") || !["approve", "reject", "reset"].includes(decision)) {
+    return { error: "invalid_review_decision" };
+  }
+  const project = await db.prepare("SELECT id FROM projects WHERE id = ?").bind(projectId).first();
+  if (!project) return { error: "project_not_found" };
+  const now = new Date().toISOString();
+  const reason = typeof body?.reason === "string" ? body.reason.trim().slice(0, 500) || null : null;
+  const statements = [db.prepare(
+    `INSERT INTO review_decisions (id, project_id, decision, category_override, subcategory_override, province_override, reason, decided_by, decided_at)
+     VALUES (?, ?, ?, NULL, NULL, NULL, ?, 'dashboard_pin_user', ?)`,
+  ).bind(crypto.randomUUID(), projectId, decision, reason, now)];
+  if (decision === "reset") {
+    statements.push(
+      db.prepare("UPDATE product_matches SET decision_status = CASE WHEN confidence >= 0.8 THEN 'auto_approved' ELSE 'pending_review' END WHERE project_id = ? AND decision_status IN ('approved', 'rejected')").bind(projectId),
+      db.prepare("UPDATE location_matches SET decision_status = CASE WHEN confidence >= 0.8 THEN 'auto_approved' ELSE 'pending_review' END WHERE project_id = ? AND decision_status IN ('approved', 'rejected')").bind(projectId),
+    );
+  } else {
+    const status = decision === "approve" ? "approved" : "rejected";
+    statements.push(
+      db.prepare("UPDATE product_matches SET decision_status = ? WHERE project_id = ? AND decision_status = 'pending_review'").bind(status, projectId),
+      db.prepare("UPDATE location_matches SET decision_status = ? WHERE project_id = ? AND decision_status = 'pending_review'").bind(status, projectId),
+    );
+  }
+  await db.batch(statements);
+  return { updated: true, project_id: projectId, decision };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -315,6 +359,15 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/review-queue") {
       return json(await reviewQueue(env.DB, url));
+    }
+    if (request.method === "POST" && url.pathname === "/v1/review-decision") {
+      if (!env.REVIEW_CONTROL_TOKEN) return json({ error: "review_not_configured" }, 503);
+      const authorized = await secureTokenEqual(request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.REVIEW_CONTROL_TOKEN);
+      if (!authorized) return json({ error: "unauthorized" }, 401);
+      let body;
+      try { body = await request.json(); } catch { return json({ error: "invalid_json" }, 400); }
+      const result = await decideReview(env.DB, body);
+      return json(result, result.error === "project_not_found" ? 404 : result.error ? 400 : 200);
     }
 
     return json({ error: "not_found" }, 404);

@@ -3,6 +3,7 @@ export const dynamic = "force-dynamic";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { logoutAction } from "./login/actions";
+import { reviewAction } from "./review/actions";
 import { SESSION_COOKIE, verifySessionToken } from "../lib/session.mjs";
 
 const apiUrl = process.env.BIT_GOV_API_URL;
@@ -155,6 +156,7 @@ export default async function Home({ searchParams }) {
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
   const coverage = status.coverage ?? [];
+  const reviewEnabled = Boolean(process.env.BIT_GOV_REVIEW_TOKEN);
   const exportParams = new URLSearchParams();
   if (filters.q) exportParams.set("q", filters.q);
   if (filters.provinces.length) exportParams.set("provinces", filters.provinces.join(","));
@@ -238,6 +240,7 @@ export default async function Home({ searchParams }) {
         <div className="review-list">{reviews.items.map((item) => <article key={item.id}>
           <div><strong>{item.title}</strong><span>{item.agency_name || "ไม่ระบุหน่วยงาน"} · {item.province || "ไม่ระบุจังหวัด"} · ปี {item.fiscal_year}</span></div>
           <div className="project-tags">{item.category ? <span>{item.category}</span> : null}{item.subcategory ? <span>{item.subcategory}</span> : null}{item.product_confidence != null ? <span>หมวด {number(Math.round(item.product_confidence * 100))}%</span> : null}{item.location_confidence != null ? <span>พื้นที่ {number(Math.round(item.location_confidence * 100))}%</span> : null}</div>
+          {reviewEnabled ? <form action={reviewAction} className="review-actions"><input type="hidden" name="projectId" value={item.id} /><button name="decision" value="approve">รับรอง</button><button name="decision" value="reject">ไม่เกี่ยวข้อง</button></form> : null}
         </article>)}</div>
       </section> : null}
     </main>

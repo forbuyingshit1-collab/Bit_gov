@@ -133,6 +133,9 @@ td small { margin-top: 5px; color: #697c8f; line-height: 1.4; }
 .review-list article { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 17px; border: 1px solid #d7e1ea; border-radius: 13px; }
 .review-list article > div:first-child { display: grid; gap: 6px; }
 .review-list article > div:first-child span { color: #607287; font-size: 14px; }
+.review-actions { display: flex; gap: 8px; }
+.review-actions button { min-height: 42px; padding: 8px 13px; border: 1px solid #aebfd1; border-radius: 9px; background: white; color: #154a7c; font: 700 15px/1 Tahoma, sans-serif; cursor: pointer; }
+.review-actions button:last-child { color: #8a2c2c; }
 
 .login-page { display: grid; min-height: 100vh; place-items: center; padding: 24px; }
 .login-card { width: min(100%, 560px); padding: 36px; border: 2px solid #c6d2df; border-radius: 22px; background: white; box-shadow: 0 8px 24px rgba(20, 50, 80, .08); text-align: center; }
