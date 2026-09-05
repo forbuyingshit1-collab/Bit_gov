@@ -59,9 +59,15 @@ function field(record, aliases) {
 export function toSatang(value) {
   const text = normalizeText(value).replace(/[฿,]/g, "");
   if (!text) return null;
-  if (!/^-?\d+(\.\d+)?$/.test(text)) return null;
+  if (!/^\d+(\.\d+)?$/.test(text)) return null;
   const [whole, fraction = ""] = text.split(".");
-  return Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
+  const satang = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
+  return Number.isSafeInteger(satang) ? satang : null;
+}
+
+function validIsoDate(year, month, day) {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
 export function thaiDateToIso(value) {
@@ -73,9 +79,10 @@ export function thaiDateToIso(value) {
     if (numericYear > 2400) numericYear -= 543;
     // EGP CSV abbreviates Buddhist Era years (e.g. 67 means 2567, or 2024 CE).
     if (numericYear < 100) numericYear += 1957;
-    const month = String(THAI_MONTHS.get(thaiMonth)).padStart(2, "0");
-    const iso = `${numericYear}-${month}-${day.padStart(2, "0")}`;
-    return Number.isNaN(Date.parse(`${iso}T00:00:00Z`)) ? null : iso;
+    const numericMonth = THAI_MONTHS.get(thaiMonth);
+    const numericDay = Number(day);
+    if (!validIsoDate(numericYear, numericMonth, numericDay)) return null;
+    return `${numericYear}-${String(numericMonth).padStart(2, "0")}-${String(numericDay).padStart(2, "0")}`;
   }
   const match = /^(\d{1,2})-(\d{1,2})-(\d{2,4})$/.exec(text);
   if (!match) return null;
@@ -83,8 +90,10 @@ export function thaiDateToIso(value) {
   let numericYear = Number(year);
   if (numericYear > 2400) numericYear -= 543;
   if (numericYear < 100) numericYear += 1957;
-  const iso = `${numericYear}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
-  return Number.isNaN(Date.parse(`${iso}T00:00:00Z`)) ? null : iso;
+  const numericMonth = Number(month);
+  const numericDay = Number(day);
+  if (!validIsoDate(numericYear, numericMonth, numericDay)) return null;
+  return `${numericYear}-${String(numericMonth).padStart(2, "0")}-${String(numericDay).padStart(2, "0")}`;
 }
 
 export function normalizeSupplierName(value) {

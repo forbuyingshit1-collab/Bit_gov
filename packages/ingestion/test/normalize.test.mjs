@@ -7,6 +7,13 @@ test("normalizes Thai dates and money into analytic values", () => {
   assert.equal(toSatang("฿7,680.50"), 768050);
 });
 
+test("rejects impossible dates and unsafe monetary integers", () => {
+  assert.equal(thaiDateToIso("31/02/2568"), null);
+  assert.equal(thaiDateToIso("31 ก.พ. 68"), null);
+  assert.equal(toSatang("999999999999999999999"), null);
+  assert.equal(toSatang("-100"), null);
+});
+
 test("keeps contract price ahead of agreed price and classifies target products", () => {
   const result = normalizeProcurementRecord({
     "รหัสโครงการ": "66119347723",
