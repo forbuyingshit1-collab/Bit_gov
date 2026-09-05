@@ -48,7 +48,7 @@ async function loadStatus() {
 }
 
 async function loadProjects(filters) {
-  if (!apiUrl) return { total: 0, items: [] };
+  if (!apiUrl) return { total: 0, limit: 25, offset: 0, items: [] };
   const url = new URL("/v1/projects", apiUrl);
   if (filters.q) url.searchParams.set("q", filters.q);
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
@@ -58,10 +58,11 @@ async function loadProjects(filters) {
   if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
   if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
   url.searchParams.set("sort", filters.sort);
+  url.searchParams.set("offset", String(filters.offset));
   try {
     const response = await fetch(url, { cache: "no-store" });
-    return response.ok ? response.json() : { total: 0, items: [], unavailable: true };
-  } catch { return { total: 0, items: [], unavailable: true }; }
+    return response.ok ? response.json() : { total: 0, limit: 25, offset: 0, items: [], unavailable: true };
+  } catch { return { total: 0, limit: 25, offset: 0, items: [], unavailable: true }; }
 }
 
 async function loadMarket(filters) {
@@ -108,7 +109,7 @@ export default async function Home({ searchParams }) {
     provinces: hasProvinceParam ? list(params.province).filter((item) => ISAN_PROVINCES.includes(item)) : ["อุดรธานี", "ขอนแก่น"],
     fiscalYear: String(params.fiscalYear ?? ""), category: String(params.category ?? ""), subcategory: String(params.subcategory ?? ""),
     minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
-    sort: params.sort === "oldest" ? "oldest" : "newest",
+    sort: params.sort === "oldest" ? "oldest" : "newest", offset: Math.max(0, Number(params.offset) || 0),
   };
   const [status, projects, market, companyWork, recommended] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters)]);
   const ready = status.state === "ready";
@@ -122,6 +123,10 @@ export default async function Home({ searchParams }) {
   if (filters.minPrice) exportParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
   if (filters.maxPrice) exportParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
   exportParams.set("sort", filters.sort);
+  const previousParams = new URLSearchParams(exportParams);
+  const nextParams = new URLSearchParams(exportParams);
+  previousParams.set("offset", String(Math.max(0, filters.offset - projects.limit)));
+  nextParams.set("offset", String(filters.offset + projects.limit));
 
   return (
     <main>
@@ -165,11 +170,11 @@ export default async function Home({ searchParams }) {
 
       <section id="results" className="results-section">
         <div className="section-heading"><div><h2>พบ {number(projects.total)} โครงการ</h2><p>รายการที่ระบบค้นพบ ไม่ได้ยืนยันว่ายังเปิดรับข้อเสนอ กรุณาตรวจสอบกับ e-GP ก่อนดำเนินการ</p></div><a className="secondary" href={`/api/export/projects?${exportParams}`}>ดาวน์โหลด CSV</a></div>
-        {projects.items?.length ? <div className="project-list">{projects.items.map((project)=><article className="project-card" key={project.id}>
+        {projects.items?.length ? <><div className="project-list">{projects.items.map((project)=><article className="project-card" key={project.id}>
           <div className="project-tags"><span>{project.province || "ไม่ระบุจังหวัด"}</span>{project.category ? <span>{project.category}</span> : null}{project.subcategory ? <span>{project.subcategory}</span> : null}<span>ปี {project.fiscal_year}</span></div>
           <h3>{project.title}</h3><p>{project.agency_name || "ไม่ระบุหน่วยงาน"}</p>
           <dl><div><dt>งบประมาณ</dt><dd>{money(project.budget_sat)}</dd></div><div><dt>ราคาชนะ</dt><dd>{money(project.winning_price_sat)}</dd></div><div><dt>ผู้ชนะ</dt><dd>{project.winner_name || "ยังไม่มีข้อมูล"}</dd></div><div><dt>วันที่ประกาศ</dt><dd>{thaiDate(project.announcement_date_iso)}</dd></div></dl>
-        </article>)}</div> : <div className="empty-state"><strong>ยังไม่พบโครงการตามตัวกรองนี้</strong><span>{totals.projects ? "ลองล้างตัวกรองหรือเลือกจังหวัดเพิ่ม" : "ระบบกำลังนำเข้าข้อมูลชุดแรก เมื่อพร้อมรายการจะแสดงที่หน้านี้อัตโนมัติ"}</span></div>}
+        </article>)}</div><nav className="pagination" aria-label="เปลี่ยนหน้าผลค้นหา">{filters.offset > 0 ? <a className="secondary" href={`/?${previousParams}#results`}>หน้าก่อนหน้า</a> : <span /> }<span>หน้า {number(Math.floor(filters.offset / projects.limit) + 1)} / {number(Math.max(1, Math.ceil(projects.total / projects.limit)))}</span>{filters.offset + projects.limit < projects.total ? <a className="secondary" href={`/?${nextParams}#results`}>หน้าถัดไป</a> : <span />}</nav></> : <div className="empty-state"><strong>ยังไม่พบโครงการตามตัวกรองนี้</strong><span>{totals.projects ? "ลองล้างตัวกรองหรือเลือกจังหวัดเพิ่ม" : "ระบบกำลังนำเข้าข้อมูลชุดแรก เมื่อพร้อมรายการจะแสดงที่หน้านี้อัตโนมัติ"}</span></div>}
       </section>
 
       <section id="company-work" className="results-section company-section">
