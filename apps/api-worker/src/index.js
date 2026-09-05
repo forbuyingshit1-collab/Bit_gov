@@ -78,7 +78,10 @@ function provinces(value) {
 }
 
 async function searchProjects(db, url, maximumLimit = 100) {
-  const where = [];
+  const where = [
+    "EXISTS (SELECT 1 FROM product_matches approved_product WHERE approved_product.project_id = p.id AND approved_product.decision_status IN ('auto_approved', 'approved'))",
+    "EXISTS (SELECT 1 FROM location_matches approved_location WHERE approved_location.project_id = p.id AND approved_location.decision_status IN ('auto_approved', 'approved'))",
+  ];
   const values = [];
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
   if (selectedProvinces.length) {
@@ -139,7 +142,10 @@ function projectCsv(items) {
 }
 
 async function marketSummary(db, url) {
-  const where = ["pm.decision_status IN ('auto_approved', 'approved')"];
+  const where = [
+    "pm.decision_status IN ('auto_approved', 'approved')",
+    "EXISTS (SELECT 1 FROM location_matches approved_location WHERE approved_location.project_id = p.id AND approved_location.decision_status IN ('auto_approved', 'approved'))",
+  ];
   const values = [];
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
   if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
@@ -234,7 +240,9 @@ async function recommendations(db, url) {
          + 20 * EXISTS (SELECT 1 FROM company_projects h WHERE h.province = p.province)
          + 15 * EXISTS (SELECT 1 FROM company_projects h WHERE h.agency_name = p.agency_name) AS opportunity_score
        FROM projects p JOIN product_matches pm ON pm.project_id = p.id
-       WHERE pm.decision_status IN ('auto_approved', 'approved') ${provinceClause} ${filterClause}
+       WHERE pm.decision_status IN ('auto_approved', 'approved')
+         AND EXISTS (SELECT 1 FROM location_matches approved_location WHERE approved_location.project_id = p.id AND approved_location.decision_status IN ('auto_approved', 'approved'))
+         ${provinceClause} ${filterClause}
          AND NOT EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.normalized_name IN (?, ?))
      )
      SELECT *, CASE WHEN opportunity_score >= 75 THEN 'สูง' WHEN opportunity_score >= 50 THEN 'กลาง' ELSE 'ต่ำ' END AS opportunity_level
