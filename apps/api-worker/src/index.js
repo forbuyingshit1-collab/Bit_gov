@@ -19,7 +19,11 @@ async function status(db) {
       `SELECT
          (SELECT COUNT(*) FROM projects) AS projects,
          (SELECT COUNT(*) FROM contracts) AS contracts,
-         (SELECT COUNT(*) FROM ingestion_errors WHERE resolved_at IS NULL) AS unresolved_errors`,
+         (SELECT COUNT(*) FROM ingestion_errors WHERE resolved_at IS NULL) AS unresolved_errors,
+         (SELECT COUNT(*) FROM (
+            SELECT project_id FROM product_matches WHERE decision_status = 'pending_review'
+            UNION SELECT project_id FROM location_matches WHERE decision_status = 'pending_review'
+          )) AS pending_reviews`,
     ).first(),
     db.prepare(
       `SELECT sr.fiscal_year, sr.source_last_modified, sr.last_seen_at,
@@ -251,6 +255,27 @@ async function recommendations(db, url) {
   return { methodology: "historical_similarity_v1", warning: "historical_record_not_open_tender_confirmation", items: result.results ?? [] };
 }
 
+async function reviewQueue(db, url) {
+  const limit = positiveInteger(url.searchParams.get("limit"), 25, 100);
+  const pending = `EXISTS (SELECT 1 FROM product_matches x WHERE x.project_id = p.id AND x.decision_status = 'pending_review')
+    OR EXISTS (SELECT 1 FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review')`;
+  const [count, items] = await Promise.all([
+    db.prepare(`SELECT COUNT(*) AS count FROM projects p WHERE ${pending}`).first(),
+    db.prepare(
+      `SELECT p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
+        (SELECT category FROM product_matches x WHERE x.project_id = p.id ORDER BY x.decision_status = 'pending_review' DESC LIMIT 1) AS category,
+        (SELECT subcategory FROM product_matches x WHERE x.project_id = p.id ORDER BY x.decision_status = 'pending_review' DESC LIMIT 1) AS subcategory,
+        (SELECT confidence FROM product_matches x WHERE x.project_id = p.id AND x.decision_status = 'pending_review' LIMIT 1) AS product_confidence,
+        (SELECT match_reason FROM product_matches x WHERE x.project_id = p.id AND x.decision_status = 'pending_review' LIMIT 1) AS product_match_reason,
+        (SELECT confidence FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review' LIMIT 1) AS location_confidence,
+        (SELECT match_reason FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review' LIMIT 1) AS location_match_reason
+       FROM projects p WHERE ${pending}
+       ORDER BY p.announcement_date_iso DESC, p.id DESC LIMIT ?`,
+    ).bind(limit).all(),
+  ]);
+  return { total: count?.count ?? 0, items: items.results ?? [] };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -287,6 +312,9 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/recommendations") {
       return json(await recommendations(env.DB, url));
+    }
+    if (request.method === "GET" && url.pathname === "/v1/review-queue") {
+      return json(await reviewQueue(env.DB, url));
     }
 
     return json({ error: "not_found" }, 404);

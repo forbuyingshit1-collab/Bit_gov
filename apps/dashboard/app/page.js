@@ -131,6 +131,14 @@ async function loadRecommendations(filters) {
   } catch { return { items: [] }; }
 }
 
+async function loadReviewQueue() {
+  if (!apiUrl) return { total: 0, items: [] };
+  try {
+    const response = await fetch(`${apiUrl}/v1/review-queue?limit=25`, { cache: "no-store" });
+    return response.ok ? response.json() : { total: 0, items: [] };
+  } catch { return { total: 0, items: [] }; }
+}
+
 export default async function Home({ searchParams }) {
   const cookieStore = await cookies();
   if (!verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value)) redirect("/login");
@@ -143,7 +151,7 @@ export default async function Home({ searchParams }) {
     minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
     sort: params.sort === "oldest" ? "oldest" : "newest", offset: Math.max(0, Number(params.offset) || 0),
   };
-  const [status, projects, market, companyWork, recommended] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters)]);
+  const [status, projects, market, companyWork, recommended, reviews] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters), loadReviewQueue()]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
   const coverage = status.coverage ?? [];
@@ -168,12 +176,12 @@ export default async function Home({ searchParams }) {
         <div className="header-actions"><span className={`status ${ready ? "ready" : "pending"}`}>{ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}</span><form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form></div>
       </header>
 
-      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#recommended">โครงการแนะนำ</a><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#company-work">ผลงานบริษัท</a></nav>
+      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#recommended">โครงการแนะนำ</a><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#company-work">ผลงานบริษัท</a>{reviews.total ? <a href="#review-queue">รอตรวจ {number(reviews.total)}</a> : null}</nav>
 
       <section id="overview" className="metrics" aria-label="ภาพรวมข้อมูล">
         <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
         <article><span>สัญญา</span><strong>{number(totals.contracts)}</strong><small>พร้อมวิเคราะห์ผู้ชนะและราคา</small></article>
-        <article><span>รายการต้องตรวจ</span><strong>{number(totals.unresolved_errors)}</strong><small>ไม่นำมาปะปนในรายงานหลัก</small></article>
+        <article><span>โครงการรอตรวจ</span><strong>{number(totals.pending_reviews)}</strong><small>ยังไม่นำมาปะปนในรายงานหลัก · error {number(totals.unresolved_errors)}</small></article>
       </section>
 
       <section className="coverage-card" aria-labelledby="coverage-title">
@@ -224,6 +232,14 @@ export default async function Home({ searchParams }) {
         <div className="company-metrics"><div><span>สัญญาที่พบ</span><strong>{number(companyWork.totals?.project_count)}</strong></div><div><span>มูลค่ารวม</span><strong>{shortMoney(companyWork.totals?.winning_price_sat)} บาท</strong></div><div><span>บริษัทที่พบ</span><strong>{number(companyWork.totals?.company_count)}</strong></div></div>
         {companyWork.items?.length ? <div className="company-table-wrap"><table><thead><tr><th>โครงการ</th><th>หมวด</th><th>จังหวัด/หน่วยงาน</th><th>มูลค่า</th></tr></thead><tbody>{companyWork.items.map((item)=><tr key={item.id}><td><strong>{item.title}</strong><small>{thaiDate(item.announcement_date_iso)}</small></td><td>{item.category || "ผลงานอื่น ๆ"}<small>{item.subcategory}</small></td><td>{item.province || "ไม่ระบุจังหวัด"}<small>{item.agency_name}</small></td><td className="money-cell">{money(item.winning_price_sat)}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>กำลังรอข้อมูลผลงานบริษัท</strong><span>เมื่อสัญญาถูก normalize แล้ว รายการจะแสดงในส่วนนี้เท่านั้นและจะไม่ปนกับผลค้นหาตลาด</span></div>}
       </section>
+
+      {reviews.items?.length ? <section id="review-queue" className="results-section review-section">
+        <div className="section-heading"><div><h2>รายการรอตรวจ</h2><p>โครงการที่ระบบพบสินค้าเป้าหมาย แต่หลักฐานหมวดหรือพื้นที่ยังไม่ชัดพอสำหรับรายงานหลัก</p></div></div>
+        <div className="review-list">{reviews.items.map((item) => <article key={item.id}>
+          <div><strong>{item.title}</strong><span>{item.agency_name || "ไม่ระบุหน่วยงาน"} · {item.province || "ไม่ระบุจังหวัด"} · ปี {item.fiscal_year}</span></div>
+          <div className="project-tags">{item.category ? <span>{item.category}</span> : null}{item.subcategory ? <span>{item.subcategory}</span> : null}{item.product_confidence != null ? <span>หมวด {number(Math.round(item.product_confidence * 100))}%</span> : null}{item.location_confidence != null ? <span>พื้นที่ {number(Math.round(item.location_confidence * 100))}%</span> : null}</div>
+        </article>)}</div>
+      </section> : null}
     </main>
   );
 }
