@@ -111,6 +111,7 @@ export function locateIsan(record) {
 }
 
 export function normalizeProcurementRecord(record, fiscalYear) {
+  if (record?._ingestion_parse_error === "csv_column_count_mismatch") return { error: "csv_column_count_mismatch" };
   const title = normalizeText(field(record, FIELD_ALIASES.title));
   if (!title) return { error: "missing_project_title" };
   const description = normalizeText(field(record, FIELD_ALIASES.description)) || null;

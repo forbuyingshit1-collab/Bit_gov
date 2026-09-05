@@ -55,3 +55,10 @@ test("maps the official EGP contract CSV headers", () => {
   assert.equal(result.contract.contractDateIso, "2024-12-12");
   assert.equal(result.supplier.taxId, "0105543008219");
 });
+
+test("quarantines CSV rows whose column count cannot be mapped", () => {
+  assert.deepEqual(
+    normalizeProcurementRecord({ _ingestion_parse_error: "csv_column_count_mismatch" }, 2568),
+    { error: "csv_column_count_mismatch" },
+  );
+});

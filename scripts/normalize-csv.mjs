@@ -53,6 +53,7 @@ async function* csvRows(body) {
 }
 
 async function submit(records) {
+  let lastError;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const response = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/normalize-records`, {
       method: "POST",
@@ -60,9 +61,21 @@ async function submit(records) {
       body: JSON.stringify({ runId, fiscalYear, resourceId, sourceVersion, records }),
     });
     if (response.ok) return response.json();
-    if (response.status < 500 || attempt === 3) throw new Error(`normalization endpoint returned HTTP ${response.status}`);
+    lastError = new Error(`normalization endpoint returned HTTP ${response.status}`);
+    if (response.status < 500 || attempt === 3) break;
     await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
   }
+  if (records.length > 1) {
+    const midpoint = Math.ceil(records.length / 2);
+    const [left, right] = await Promise.all([submit(records.slice(0, midpoint)), submit(records.slice(midpoint))]);
+    return {
+      sourceCount: left.sourceCount + right.sourceCount,
+      acceptedCount: left.acceptedCount + right.acceptedCount,
+      duplicateCount: left.duplicateCount + right.duplicateCount,
+      quarantineCount: left.quarantineCount + right.quarantineCount,
+    };
+  }
+  throw lastError;
 }
 
 async function readState() {
@@ -86,10 +99,11 @@ let duplicateCount = 0;
 let quarantineCount = 0;
 for await (const row of csvRows(response.body)) {
   if (!headers) { headers = row.map((value) => value.replace(/^\uFEFF/, "").trim()); continue; }
-  if (row.length !== headers.length) throw new Error(`CSV row ${rowCount + 1} has ${row.length} fields; expected ${headers.length}`);
   rowCount += 1;
   if (rowCount <= resumeFrom) continue;
-  batch.push(Object.fromEntries(headers.map((header, index) => [header, row[index]])));
+  batch.push(row.length === headers.length
+    ? Object.fromEntries(headers.map((header, index) => [header, row[index]]))
+    : { _ingestion_parse_error: "csv_column_count_mismatch", _source_row_number: String(rowCount) });
   if (batch.length === batchSize || rowCount - resumeFrom >= maxRows) {
     const result = await submit(batch);
     acceptedCount += result.acceptedCount;
