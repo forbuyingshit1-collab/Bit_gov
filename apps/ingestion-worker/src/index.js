@@ -380,6 +380,13 @@ export function contractNaturalIdentity(projectId, contract, fingerprint) {
   return contract.contractNumber ? `${projectId}|${contract.contractNumber}` : `${projectId}|fallback|${fingerprint}`;
 }
 
+export function supplierNaturalIdentity(supplier) {
+  const taxId = supplier.taxId?.trim();
+  return /^\d{13}$/.test(taxId ?? "")
+    ? `tax:${taxId}`
+    : `name:${supplier.normalizedName}`;
+}
+
 async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVersion, records }, env) {
   assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
   if (!Array.isArray(records) || records.length === 0 || records.length > 100) {
@@ -466,16 +473,19 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
       contract.agreedPriceSat, contract.contractPriceSat, contract.winningPriceSat, contract.winningPriceSource, rawId));
 
     if (normalized.supplier) {
-      const supplierId = `supplier:${await sha256Hex(normalized.supplier.normalizedName)}`;
+      const supplierId = `supplier:${await sha256Hex(supplierNaturalIdentity(normalized.supplier))}`;
       statements.push(
         env.DB.prepare(
-          `INSERT INTO suppliers (id, tax_id, name, normalized_name, province) VALUES (?, ?, ?, ?, NULL)
-           ON CONFLICT(normalized_name) DO UPDATE SET name = excluded.name, tax_id = COALESCE(excluded.tax_id, suppliers.tax_id)`,
+          `INSERT OR IGNORE INTO suppliers (id, tax_id, name, normalized_name, province) VALUES (?, ?, ?, ?, NULL)`,
         ).bind(supplierId, normalized.supplier.taxId, normalized.supplier.name, normalized.supplier.normalizedName),
         env.DB.prepare(
           `INSERT OR IGNORE INTO awards (id, project_id, contract_id, supplier_id, award_date_raw, award_date_iso, winning_price_sat, raw_record_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        ).bind(`award:${fingerprint}`, projectId, contractId, supplierId, contract.contractDateRaw, contract.contractDateIso, contract.winningPriceSat, rawId),
+           VALUES (?, ?, ?, COALESCE(
+             (SELECT id FROM suppliers WHERE tax_id = ? OR normalized_name = ? LIMIT 1), ?
+           ), ?, ?, ?, ?)`,
+        ).bind(`award:${fingerprint}`, projectId, contractId, normalized.supplier.taxId,
+          normalized.supplier.normalizedName, supplierId, contract.contractDateRaw, contract.contractDateIso,
+          contract.winningPriceSat, rawId),
       );
     }
     if (normalized.productMatch) statements.push(env.DB.prepare(

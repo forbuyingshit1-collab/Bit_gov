@@ -148,8 +148,9 @@ async function writeCompletedCaptureState(state) {
 const initialState = process.env.LOCAL_UPLOAD === "1" ? await readCaptureState() : {};
 const activeResourceId = Object.keys(initialState)[0]?.split(":")[1] ?? process.env.RESOURCE_ID ?? null;
 let remainingResources = resourceLimit;
+const fiscalYears = Array.from({ length: years[1] - years[0] + 1 }, (_, index) => years[1] - index);
 
-catalog: for (let fiscalYear = years[0]; fiscalYear <= years[1]; fiscalYear += 1) {
+catalog: for (const fiscalYear of fiscalYears) {
   const title = titleFor(fiscalYear);
   const search = await ckan("package_search", { q: title, rows: 20 });
   const dataset = (search.results ?? []).find((item) => item.title === title);
