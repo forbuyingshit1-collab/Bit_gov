@@ -17,6 +17,6 @@
 
 ## Status
 
-Phase 1: staging foundation. เชื่อม D1, Queue, API Worker และ Vercel project แล้ว แต่ยังไม่ย้ายข้อมูลจากระบบเดิมหรือเปิด scheduled ingestion
+Phase 1: staging ingestion กำลังทำงาน. Dashboard, PIN login, API Worker, ingestion Worker, D1, R2 และ Windows daily resume เชื่อมครบแล้ว ขณะนี้กำลังเก็บ raw source ปี 2565–2568 แบบ resumable ก่อน normalize; ปี 2569 รายงานว่า source ยังไม่พร้อมตามจริง
 
-อ่าน [Architecture decisions](docs/architecture/decisions.md) และ [Bootstrap runbook](docs/runbooks/bootstrap.md) ก่อนเริ่มงาน
+อ่าน [Architecture decisions](docs/architecture/decisions.md), [Bootstrap runbook](docs/runbooks/bootstrap.md) และ [Daily ingestion runbook](docs/runbooks/daily-ingestion.md) ก่อนดูแลระบบ

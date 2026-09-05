@@ -1,6 +1,6 @@
 # Approved Architecture Decisions
 
-อัปเดต: 4 กันยายน 2569
+อัปเดต: 5 กันยายน 2569
 
 1. ใช้ Private Monorepo `forbuyingshit1-collab/Bit_gov`
 2. Clean Build และ port เฉพาะ logic, fixtures และ UI ที่พิสูจน์แล้ว
@@ -22,8 +22,8 @@
 - `opend.data.go.th/get-ckan` และ `data.go.th/api/3/action` ตอบ HTTP 403 เมื่อเรียกจาก Cloudflare Worker แม้เรียกจากเครื่องผู้ดูแลได้ปกติ
 - URL ดาวน์โหลด CSV สาธารณะตอบ HTTP 206 จาก Cloudflare Worker และรองรับ byte range; resource ตัวอย่างมีขนาด 626,564,320 bytes
 - Vercel ก็ถูกต้นทางตอบ HTTP 403 เช่นกัน แม้ส่ง API key ที่เก็บเป็น server secret; จึงไม่ใช้ Vercel เป็นตัวดึง catalog
-- ใช้ local metadata bridge (`scripts/seed-catalog.mjs`) บนเครื่องผู้ดูแลที่ API gateway ยอมรับ: bridge ส่งเฉพาะ metadata ของ resource ที่ allowlist แล้วผ่าน endpoint ที่มี control token; Cloudflare ดึง CSV สาธารณะ เก็บ R2 และประมวลผลต่อเอง
-- Smoke run วันที่ 4 กันยายน 2569 ยืนยัน D1 checkpoint ที่ byte `1,048,576` และอ่าน R2 object ขนาด `1,048,576` bytes ได้จริง
+- ใช้ local acquisition bridge (`scripts/seed-catalog.mjs`) บนเครื่องผู้ดูแลที่ API gateway ยอมรับ: bridge ดาวน์โหลดเฉพาะ byte range ปัจจุบันลงไฟล์ชั่วคราว อัปโหลดตรงเข้า R2 แล้วลบทันที จากนั้น Worker อ่านวัตถุจาก R2 เพื่อตรวจ byte SHA-256 ก่อนเลื่อน D1 checkpoint
+- Smoke run วันที่ 4 กันยายน 2569 ยืนยัน D1 checkpoint และ R2 object แบบ byte-for-byte; วันที่ 5 กันยายนเปิด resumable bulk capture และแสดง coverage จริงบน Dashboard แล้ว
 - ยังไม่เปิด cron จนกว่าจะพิสูจน์ queue consumption, row accounting และ full-resource resume ครบ
 
 ## Resource names
