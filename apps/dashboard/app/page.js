@@ -47,6 +47,14 @@ function BarChart({ title, rows, tone = "blue" }) {
   </div>)}</div> : <div className="chart-empty">กราฟจะแสดงเมื่อข้อมูลชุดแรกพร้อม</div>}</article>;
 }
 
+function MonthlyChart({ rows }) {
+  const shown = rows.slice(-12);
+  const maximum = Math.max(1, ...shown.map((row) => row.project_count ?? 0));
+  return <article className="chart-card chart-wide"><h2>แนวโน้มโครงการรายเดือน</h2>{shown.length ? <div className="month-chart">{shown.map((row) => <div className="month-column" key={row.label}>
+    <strong>{number(row.project_count)}</strong><div><span style={{ height: `${Math.max(4, ((row.project_count ?? 0) / maximum) * 100)}%` }} /></div><small>{row.label || "ไม่ระบุ"}</small>
+  </div>)}</div> : <div className="chart-empty">แนวโน้มรายเดือนจะแสดงเมื่อข้อมูลชุดแรกพร้อม</div>}</article>;
+}
+
 async function loadStatus() {
   if (!apiUrl) return { state: "not_configured", totals: {} };
   try {
@@ -79,6 +87,10 @@ async function loadMarket(filters) {
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
   if (filters.category) url.searchParams.set("category", filters.category);
+  if (filters.subcategory) url.searchParams.set("subcategory", filters.subcategory);
+  if (filters.q) url.searchParams.set("q", filters.q);
+  if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
+  if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
   try {
     const response = await fetch(url, { cache: "no-store" });
     return response.ok ? response.json() : { categories: [], provinces: [], months: [] };
@@ -91,6 +103,11 @@ async function loadCompanyWork(filters) {
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
   if (filters.category) url.searchParams.set("category", filters.category);
+  if (filters.subcategory) url.searchParams.set("subcategory", filters.subcategory);
+  if (filters.q) url.searchParams.set("q", filters.q);
+  if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
+  if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
+  url.searchParams.set("sort", filters.sort);
   try {
     const response = await fetch(url, { cache: "no-store" });
     return response.ok ? response.json() : { totals: {}, items: [] };
@@ -101,6 +118,13 @@ async function loadRecommendations(filters) {
   if (!apiUrl) return { items: [] };
   const url = new URL("/v1/recommendations", apiUrl);
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
+  if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
+  if (filters.category) url.searchParams.set("category", filters.category);
+  if (filters.subcategory) url.searchParams.set("subcategory", filters.subcategory);
+  if (filters.q) url.searchParams.set("q", filters.q);
+  if (filters.minPrice) url.searchParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
+  if (filters.maxPrice) url.searchParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
+  url.searchParams.set("sort", filters.sort);
   try {
     const response = await fetch(url, { cache: "no-store" });
     return response.ok ? response.json() : { items: [] };
@@ -163,6 +187,7 @@ export default async function Home({ searchParams }) {
       <section className="charts" aria-label="กราฟสรุปตลาด">
         <BarChart title="งบประมาณตามหมวดสินค้า" rows={market.categories} />
         <BarChart title="งบประมาณตามจังหวัด" rows={market.provinces} tone="green" />
+        <MonthlyChart rows={market.months} />
       </section>
 
       <section id="recommended" className="results-section recommended-section">

@@ -67,6 +67,12 @@ function positiveInteger(value, fallback, maximum) {
   return Number.isInteger(parsed) && parsed > 0 && parsed <= maximum ? parsed : fallback;
 }
 
+export function optionalNonNegativeInteger(value) {
+  if (value === null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
 function provinces(value) {
   return [...new Set(String(value ?? "").split(",").map((item) => item.trim()).filter(Boolean))].slice(0, 20);
 }
@@ -79,8 +85,8 @@ async function searchProjects(db, url, maximumLimit = 100) {
     where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`);
     values.push(...selectedProvinces);
   }
-  const fiscalYear = Number(url.searchParams.get("fiscalYear"));
-  if (Number.isInteger(fiscalYear)) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
+  const fiscalYear = optionalNonNegativeInteger(url.searchParams.get("fiscalYear"));
+  if (fiscalYear !== null) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
   const category = url.searchParams.get("category")?.trim();
   if (category) {
     where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.category = ? AND pm.decision_status IN ('auto_approved', 'approved'))");
@@ -96,10 +102,10 @@ async function searchProjects(db, url, maximumLimit = 100) {
     where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.name LIKE ?))");
     values.push(`%${query}%`, `%${query}%`, `%${query}%`);
   }
-  const minPrice = Number(url.searchParams.get("minPriceSat"));
-  if (Number.isSafeInteger(minPrice) && minPrice >= 0) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) >= ?"); values.push(minPrice); }
-  const maxPrice = Number(url.searchParams.get("maxPriceSat"));
-  if (Number.isSafeInteger(maxPrice) && maxPrice >= 0) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) <= ?"); values.push(maxPrice); }
+  const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
+  if (minPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) >= ?"); values.push(minPrice); }
+  const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
+  if (maxPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) <= ?"); values.push(maxPrice); }
   const direction = url.searchParams.get("sort") === "oldest" ? "ASC" : "DESC";
   const limit = positiveInteger(url.searchParams.get("limit"), 25, maximumLimit);
   const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0);
@@ -137,10 +143,21 @@ async function marketSummary(db, url) {
   const values = [];
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
   if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
-  const fiscalYear = Number(url.searchParams.get("fiscalYear"));
-  if (Number.isInteger(fiscalYear)) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
+  const fiscalYear = optionalNonNegativeInteger(url.searchParams.get("fiscalYear"));
+  if (fiscalYear !== null) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
   const category = url.searchParams.get("category")?.trim();
   if (category) { where.push("pm.category = ?"); values.push(category); }
+  const subcategory = url.searchParams.get("subcategory")?.trim();
+  if (subcategory) { where.push("pm.subcategory = ?"); values.push(subcategory); }
+  const query = url.searchParams.get("q")?.trim();
+  if (query) {
+    where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.name LIKE ?))");
+    values.push(`%${query}%`, `%${query}%`, `%${query}%`);
+  }
+  const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
+  if (minPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) >= ?"); values.push(minPrice); }
+  const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
+  if (maxPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) <= ?"); values.push(maxPrice); }
   const predicate = `WHERE ${where.join(" AND ")}`;
   const [categories, provinceRows, months] = await Promise.all([
     db.prepare(`SELECT pm.category AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} GROUP BY pm.category ORDER BY budget_sat DESC`).bind(...values).all(),
@@ -156,10 +173,19 @@ async function companyWork(db, url) {
   const values = [...companyNames];
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
   if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
-  const fiscalYear = Number(url.searchParams.get("fiscalYear"));
-  if (Number.isInteger(fiscalYear)) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
+  const fiscalYear = optionalNonNegativeInteger(url.searchParams.get("fiscalYear"));
+  if (fiscalYear !== null) { where.push("p.fiscal_year = ?"); values.push(fiscalYear); }
   const category = url.searchParams.get("category")?.trim();
   if (category) { where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.category = ?)"); values.push(category); }
+  const subcategory = url.searchParams.get("subcategory")?.trim();
+  if (subcategory) { where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.subcategory = ?)"); values.push(subcategory); }
+  const query = url.searchParams.get("q")?.trim();
+  if (query) { where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR s.name LIKE ?)"); values.push(`%${query}%`, `%${query}%`, `%${query}%`); }
+  const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
+  if (minPrice !== null) { where.push("COALESCE(a.winning_price_sat, p.budget_sat, 0) >= ?"); values.push(minPrice); }
+  const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
+  if (maxPrice !== null) { where.push("COALESCE(a.winning_price_sat, p.budget_sat, 0) <= ?"); values.push(maxPrice); }
+  const direction = url.searchParams.get("sort") === "oldest" ? "ASC" : "DESC";
   const predicate = `WHERE ${where.join(" AND ")}`;
   const joins = "FROM awards a JOIN projects p ON p.id = a.project_id JOIN suppliers s ON s.id = a.supplier_id";
   const [totals, items] = await Promise.all([
@@ -168,7 +194,7 @@ async function companyWork(db, url) {
       a.winning_price_sat, s.name AS winner_name,
       (SELECT category FROM product_matches pm WHERE pm.project_id = p.id LIMIT 1) AS category,
       (SELECT subcategory FROM product_matches pm WHERE pm.project_id = p.id LIMIT 1) AS subcategory
-      ${joins} ${predicate} ORDER BY p.announcement_date_iso DESC, p.id DESC LIMIT 100`).bind(...values).all(),
+      ${joins} ${predicate} ORDER BY p.announcement_date_iso ${direction}, p.id ${direction} LIMIT 100`).bind(...values).all(),
   ]);
   return { totals: totals ?? { project_count: 0, winning_price_sat: 0, company_count: 0 }, items: items.results ?? [] };
 }
@@ -177,7 +203,23 @@ async function recommendations(db, url) {
   const companyNames = ["ไอคิวโอเอ โซลูชั่น", "ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี"];
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
   const provinceClause = selectedProvinces.length ? `AND p.province IN (${selectedProvinces.map(() => "?").join(",")})` : "";
-  const values = [...companyNames, ...selectedProvinces];
+  const candidateWhere = [];
+  const candidateValues = [];
+  const fiscalYear = optionalNonNegativeInteger(url.searchParams.get("fiscalYear"));
+  if (fiscalYear !== null) { candidateWhere.push("p.fiscal_year = ?"); candidateValues.push(fiscalYear); }
+  const category = url.searchParams.get("category")?.trim();
+  if (category) { candidateWhere.push("pm.category = ?"); candidateValues.push(category); }
+  const subcategory = url.searchParams.get("subcategory")?.trim();
+  if (subcategory) { candidateWhere.push("pm.subcategory = ?"); candidateValues.push(subcategory); }
+  const query = url.searchParams.get("q")?.trim();
+  if (query) { candidateWhere.push("(p.title LIKE ? OR p.agency_name LIKE ?)"); candidateValues.push(`%${query}%`, `%${query}%`); }
+  const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
+  if (minPrice !== null) { candidateWhere.push("COALESCE(p.budget_sat, 0) >= ?"); candidateValues.push(minPrice); }
+  const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
+  if (maxPrice !== null) { candidateWhere.push("COALESCE(p.budget_sat, 0) <= ?"); candidateValues.push(maxPrice); }
+  const filterClause = candidateWhere.length ? `AND ${candidateWhere.join(" AND ")}` : "";
+  const direction = url.searchParams.get("sort") === "oldest" ? "ASC" : "DESC";
+  const values = [...companyNames, ...selectedProvinces, ...candidateValues];
   const result = await db.prepare(
     `WITH company_projects AS (
        SELECT DISTINCT cp.id, cp.agency_name, cp.province,
@@ -192,11 +234,11 @@ async function recommendations(db, url) {
          + 20 * EXISTS (SELECT 1 FROM company_projects h WHERE h.province = p.province)
          + 15 * EXISTS (SELECT 1 FROM company_projects h WHERE h.agency_name = p.agency_name) AS opportunity_score
        FROM projects p JOIN product_matches pm ON pm.project_id = p.id
-       WHERE pm.decision_status IN ('auto_approved', 'approved') ${provinceClause}
+       WHERE pm.decision_status IN ('auto_approved', 'approved') ${provinceClause} ${filterClause}
          AND NOT EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.normalized_name IN (?, ?))
      )
      SELECT *, CASE WHEN opportunity_score >= 75 THEN 'สูง' WHEN opportunity_score >= 50 THEN 'กลาง' ELSE 'ต่ำ' END AS opportunity_level
-     FROM candidates ORDER BY opportunity_score DESC, announcement_date_iso DESC LIMIT 25`,
+     FROM candidates ORDER BY opportunity_score DESC, announcement_date_iso ${direction} LIMIT 25`,
   ).bind(...values, ...companyNames).all();
   return { methodology: "historical_similarity_v1", warning: "historical_record_not_open_tender_confirmation", items: result.results ?? [] };
 }
