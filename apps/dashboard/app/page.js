@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { logoutAction } from "./login/actions";
 import { reviewAction } from "./review/actions";
 import { SESSION_COOKIE, verifySessionToken } from "../lib/session.mjs";
+import { VIEWS, readFilters, pageParams, apiParams } from '../lib/filters.mjs';
 
 const apiUrl = process.env.BIT_GOV_API_URL;
 const ISAN_PROVINCES = [
@@ -33,6 +34,8 @@ function shortMoney(satang) {
 }
 
 function coverageLabel(item) {
+  if (['unchecked','stale_check','check_failed'].includes(item.state)) return 'ยังยืนยันความครบไม่ได้ รอตรวจแหล่งข้อมูล';
+  if (item.state === 'ready') return `พร้อมวิเคราะห์ ${number(item.normalized_rows)} แถว`;
   if (item.state === "source_unavailable") return "ยังไม่พบชุดข้อมูลทางการ";
   if (item.normalized_rows > 0) return `นำเข้าวิเคราะห์แล้ว ${number(item.normalized_rows)} แถว`;
   if (item.state === "captured") return "เก็บไฟล์ต้นฉบับครบแล้ว กำลังรอแปลงข้อมูล";
@@ -67,6 +70,7 @@ async function loadStatus() {
 async function loadProjects(filters) {
   if (!apiUrl) return { total: 0, limit: 25, offset: 0, items: [] };
   const url = new URL("/v1/projects", apiUrl);
+  url.searchParams.set('scope', filters.scope);
   if (filters.q) url.searchParams.set("q", filters.q);
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
@@ -101,6 +105,8 @@ async function loadMarket(filters) {
 async function loadCompanyWork(filters) {
   if (!apiUrl) return { totals: {}, items: [] };
   const url = new URL("/v1/company-work", apiUrl);
+  if (filters.company) url.searchParams.set('company', filters.company);
+  url.searchParams.set('offset', String(filters.offset));
   if (filters.provinces.length) url.searchParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) url.searchParams.set("fiscalYear", filters.fiscalYear);
   if (filters.category) url.searchParams.set("category", filters.category);
@@ -149,10 +155,10 @@ async function loadForecast(filters) {
   } catch { return { items: [] }; }
 }
 
-async function loadReviewQueue() {
+async function loadReviewQueue(filters) {
   if (!apiUrl) return { total: 0, items: [] };
   try {
-    const response = await fetch(`${apiUrl}/v1/review-queue?limit=25`, { cache: "no-store" });
+    const response = await fetch(`${apiUrl}/v1/review-queue?${apiParams(filters)}`, { cache: "no-store" });
     return response.ok ? response.json() : { total: 0, items: [] };
   } catch { return { total: 0, items: [] }; }
 }
@@ -161,20 +167,22 @@ export default async function Home({ searchParams }) {
   const cookieStore = await cookies();
   if (!verifySessionToken(cookieStore.get(SESSION_COOKIE)?.value)) redirect("/login");
   const params = await searchParams;
-  const hasProvinceParam = Object.prototype.hasOwnProperty.call(params, "province");
-  const filters = {
-    q: String(params.q ?? "").trim(),
-    provinces: hasProvinceParam ? list(params.province).filter((item) => ISAN_PROVINCES.includes(item)) : ["อุดรธานี", "ขอนแก่น"],
-    fiscalYear: String(params.fiscalYear ?? ""), category: String(params.category ?? ""), subcategory: String(params.subcategory ?? ""),
-    minPrice: String(params.minPrice ?? ""), maxPrice: String(params.maxPrice ?? ""),
-    sort: params.sort === "oldest" ? "oldest" : "newest", offset: Math.max(0, Number(params.offset) || 0),
-  };
-  const [status, projects, market, companyWork, recommended, forecasted, reviews] = await Promise.all([loadStatus(), loadProjects(filters), loadMarket(filters), loadCompanyWork(filters), loadRecommendations(filters), loadForecast(filters), loadReviewQueue()]);
+  const filters = readFilters(params);
+  filters.provinces = filters.provinces.filter(item => ISAN_PROVINCES.includes(item));
+  const view = filters.view;
+  const [status, projects, market, companyWork, recommended, forecasted, reviews] = await Promise.all([
+    loadStatus(), view === 'search' ? loadProjects(filters) : { total: 0, limit: 25, items: [] },
+    view === 'market' ? loadMarket(filters) : { categories: [], provinces: [], months: [] },
+    view === 'company' ? loadCompanyWork(filters) : { totals: {}, items: [] },
+    view === 'recommended' ? loadRecommendations(filters) : { items: [] },
+    view === 'forecast' ? loadForecast(filters) : { items: [] },
+    view === 'review' ? loadReviewQueue(filters) : { items: [] }]);
   const ready = status.state === "ready";
   const totals = status.totals ?? {};
   const coverage = status.coverage ?? [];
   const reviewEnabled = Boolean(process.env.BIT_GOV_REVIEW_TOKEN);
   const exportParams = new URLSearchParams();
+  exportParams.set('scope', filters.scope);
   if (filters.q) exportParams.set("q", filters.q);
   if (filters.provinces.length) exportParams.set("provinces", filters.provinces.join(","));
   if (filters.fiscalYear) exportParams.set("fiscalYear", filters.fiscalYear);
@@ -183,8 +191,8 @@ export default async function Home({ searchParams }) {
   if (filters.minPrice) exportParams.set("minPriceSat", String(Math.round(Number(filters.minPrice) * 100)));
   if (filters.maxPrice) exportParams.set("maxPriceSat", String(Math.round(Number(filters.maxPrice) * 100)));
   exportParams.set("sort", filters.sort);
-  const previousParams = new URLSearchParams(exportParams);
-  const nextParams = new URLSearchParams(exportParams);
+  const previousParams = pageParams(filters);
+  const nextParams = pageParams(filters);
   previousParams.set("offset", String(Math.max(0, filters.offset - projects.limit)));
   nextParams.set("offset", String(filters.offset + projects.limit));
 
@@ -195,7 +203,25 @@ export default async function Home({ searchParams }) {
         <div className="header-actions"><span className={`status ${ready ? "ready" : "pending"}`}>{ready ? "เชื่อมต่อข้อมูลแล้ว" : "กำลังเชื่อมต่อข้อมูล"}</span><form action={logoutAction}><button className="logout" type="submit">ออกจากระบบ</button></form></div>
       </header>
 
-      <nav className="main-nav" aria-label="เมนูหลัก"><a href="#recommended">โครงการแนะนำ</a><a href="#forecast">คาดการณ์ความต้องการ</a><a href="#search">ค้นหาโครงการ</a><a href="#overview">ภาพรวมตลาด</a><a href="#company-work">ผลงานบริษัท</a>{reviews.total ? <a href="#review-queue">รอตรวจ {number(reviews.total)}</a> : null}</nav>
+      <nav className="main-nav" aria-label="เมนูหลัก">{Object.entries(VIEWS).map(([key,label]) => <a key={key} href={`/?view=${key}`} aria-current={key === view ? 'page' : undefined}>{label}</a>)}</nav>
+
+      <section id="search" className="filter-panel">
+        <div className="section-heading"><div><h2>{VIEWS[view]}</h2><p>ตัวกรองใช้เฉพาะหน้านี้ เลือกได้หลายจังหวัด</p></div></div>
+        <form method="get" className="filters">
+          <input type="hidden" name="view" value={view} /><input type="hidden" name="submitted" value="1" />
+          {view === 'company' ? <label className="field field-wide"><span>บริษัท</span><select name="company" defaultValue={filters.company}><option value="">รวมทั้งสองบริษัท</option><option value="iqoa">ไอคิวโอเอ โซลูชั่น</option><option value="southeast">ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี</option></select></label> : null}
+          {view === 'search' ? <label className="field"><span>ขอบเขตข้อมูล</span><select name="scope" defaultValue={filters.scope}><option value="focus">สินค้าและพื้นที่เป้าหมาย</option><option value="all">ทุกโครงการในฐานข้อมูล</option></select></label> : null}
+          <label className="field field-wide"><span>คำค้น</span><input name="q" defaultValue={filters.q} placeholder="ชื่อโครงการ หน่วยงาน หรือบริษัทผู้ชนะ" /></label>
+          <label className="field"><span>ปีงบประมาณ</span><select name="fiscalYear" defaultValue={filters.fiscalYear}><option value="">ทุกปีที่มีข้อมูล</option>{[2569,2568,2567,2566,2565].map((year)=><option key={year}>{year}</option>)}</select></label>
+          <label className="field"><span>หมวดสินค้า</span><select name="category" defaultValue={filters.category}><option value="">ทุกหมวดสินค้า</option>{CATEGORIES.map((category)=><option key={category}>{category}</option>)}</select></label>
+          <label className="field"><span>หมวดย่อย</span><select name="subcategory" defaultValue={filters.subcategory}><option value="">ทุกหมวดย่อย</option>{SUBCATEGORIES.map((subcategory)=><option key={subcategory}>{subcategory}</option>)}</select></label>
+          <label className="field"><span>ราคาต่ำสุด (บาท)</span><input name="minPrice" type="number" min="0" step="1000" defaultValue={filters.minPrice} placeholder="0" /></label>
+          <label className="field"><span>ราคาสูงสุด (บาท)</span><input name="maxPrice" type="number" min="0" step="1000" defaultValue={filters.maxPrice} placeholder="ไม่จำกัด" /></label>
+          <label className="field"><span>เรียงรายการ</span><select name="sort" defaultValue={filters.sort}><option value="newest">ใหม่ไปเก่า</option><option value="oldest">เก่าไปใหม่</option></select></label>
+          <details className="province-picker" open><summary>จังหวัดที่เลือก: {filters.provinces.length || "ทั้งหมด"}</summary><div className="province-grid">{ISAN_PROVINCES.map((province)=><label key={province}><input type="checkbox" name="province" value={province} defaultChecked={filters.provinces.includes(province)} /><span>{province}</span></label>)}</div></details>
+          <div className="filter-actions"><button className="primary" type="submit">ค้นหา</button><a className="secondary" href={`/?view=${view}&submitted=1`}>ล้างตัวกรอง</a></div>
+        </form>
+      </section>
 
       <section id="overview" className="metrics" aria-label="ภาพรวมข้อมูล">
         <article><span>โครงการในฐานข้อมูล</span><strong>{number(totals.projects)}</strong><small>ผ่าน normalization แล้ว</small></article>
@@ -211,42 +237,28 @@ export default async function Home({ searchParams }) {
         </article>) : <p className="coverage-loading">กำลังอ่านสถานะการนำเข้าจาก Cloudflare</p>}</div>
       </section>
 
-      <section className="charts" aria-label="กราฟสรุปตลาด">
+      <section className="charts" aria-label="กราฟสรุปตลาด" hidden={view !== 'market'}>
         <BarChart title="งบประมาณตามหมวดสินค้า" rows={market.categories} />
         <BarChart title="งบประมาณตามจังหวัด" rows={market.provinces} tone="green" />
         <MonthlyChart rows={market.months} />
       </section>
 
-      <section id="recommended" className="results-section recommended-section">
+      <section id="recommended" className="results-section recommended-section" hidden={view !== 'recommended'}>
         <div className="section-heading"><div><h2>โครงการแนะนำ</h2><p>ให้คะแนนจากความคล้ายกับผลงานบริษัทในอดีต ไม่ใช่การยืนยันว่ายังเปิดรับข้อเสนอ</p></div></div>
-        {recommended.items?.length ? <div className="recommendation-grid">{recommended.items.slice(0, 6).map((item)=><article className="recommendation-card" key={item.id}><div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}% · โอกาส{item.opportunity_level}</div><h3>{item.title}</h3><p>{item.agency_name || "ไม่ระบุหน่วยงาน"} · {item.province || "ไม่ระบุจังหวัด"}</p><div className="project-tags"><span>{item.category}</span>{item.subcategory ? <span>{item.subcategory}</span> : null}<span>{money(item.budget_sat)}</span></div></article>)}</div> : <div className="empty-state"><strong>กำลังสร้างฐานเปรียบเทียบ</strong><span>คำแนะนำจะเริ่มแสดงเมื่อมีทั้งประวัติบริษัทและโครงการตลาดใน D1</span></div>}
+        {recommended.items?.length ? <div className="recommendation-grid">{recommended.items.slice(0, 6).map((item)=><article className="recommendation-card" key={item.id}><div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}/100 · ความเหมาะสม{item.opportunity_level}</div><h3>{item.title}</h3><p>{item.agency_name || "ไม่ระบุหน่วยงาน"} · {item.province || "ไม่ระบุจังหวัด"}</p><div className="project-tags"><span>{item.category}</span>{item.subcategory ? <span>{item.subcategory}</span> : null}<span>{money(item.budget_sat)}</span></div></article>)}</div> : <div className="empty-state"><strong>กำลังสร้างฐานเปรียบเทียบ</strong><span>คำแนะนำจะเริ่มแสดงเมื่อมีทั้งประวัติบริษัทและโครงการตลาดใน D1</span></div>}
       </section>
 
-      <section id="forecast" className="results-section forecast-section">
+      <section id="forecast" className="results-section forecast-section" hidden={view !== 'forecast'}>
         <div className="section-heading"><div><h2>คาดการณ์หน่วยงานที่อาจมีความต้องการ</h2><p>วิเคราะห์อายุครุภัณฑ์ ประวัติซื้อซ้ำ และความใกล้เคียงกับผลงานบริษัท ไม่ใช่ประกาศเปิดประมูล</p></div></div>
         {forecasted.items?.length ? <div className="forecast-grid">{forecasted.items.slice(0, 8).map((item) => <article key={`${item.agency_name}|${item.category}|${item.subcategory}`}>
-          <div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}% · โอกาส{item.opportunity_level}</div>
+          <div className={`score score-${item.opportunity_level}`}>{item.opportunity_score}/100 · ความเหมาะสม{item.opportunity_level}</div>
           <h3>{item.agency_name || "ไม่ระบุหน่วยงาน"}</h3><p>{item.province || "ไม่ระบุจังหวัด"} · คาดปี {item.expected_fiscal_year}</p>
           <strong>{item.predicted_need}</strong><div className="project-tags"><span>{item.category}</span>{item.subcategory ? <span>{item.subcategory}</span> : null}<span>ฐานเดิม {number(item.historical_projects)} โครงการ</span><span>เฉลี่ย {shortMoney(item.estimated_budget_sat)} บาท</span></div>
         </article>)}</div> : <div className="empty-state"><strong>กำลังสร้างแบบจำลองจากประวัติจริง</strong><span>จะเริ่มคาดการณ์เมื่อมีผลงานบริษัทและประวัติโครงการของหน่วยงานใน D1</span></div>}
       </section>
 
-      <section id="search" className="filter-panel">
-        <div className="section-heading"><div><h2>ค้นหาโครงการ</h2><p>เลือกได้หลายจังหวัด และไม่จำเป็นต้องกรอกครบทุกช่อง</p></div></div>
-        <form method="get" className="filters">
-          <label className="field field-wide"><span>คำค้น</span><input name="q" defaultValue={filters.q} placeholder="ชื่อโครงการ หน่วยงาน หรือบริษัทผู้ชนะ" /></label>
-          <label className="field"><span>ปีงบประมาณ</span><select name="fiscalYear" defaultValue={filters.fiscalYear}><option value="">ทุกปีที่มีข้อมูล</option>{[2569,2568,2567,2566,2565].map((year)=><option key={year}>{year}</option>)}</select></label>
-          <label className="field"><span>หมวดสินค้า</span><select name="category" defaultValue={filters.category}><option value="">ทุกหมวดสินค้า</option>{CATEGORIES.map((category)=><option key={category}>{category}</option>)}</select></label>
-          <label className="field"><span>หมวดย่อย</span><select name="subcategory" defaultValue={filters.subcategory}><option value="">ทุกหมวดย่อย</option>{SUBCATEGORIES.map((subcategory)=><option key={subcategory}>{subcategory}</option>)}</select></label>
-          <label className="field"><span>ราคาต่ำสุด (บาท)</span><input name="minPrice" type="number" min="0" step="1000" defaultValue={filters.minPrice} placeholder="0" /></label>
-          <label className="field"><span>ราคาสูงสุด (บาท)</span><input name="maxPrice" type="number" min="0" step="1000" defaultValue={filters.maxPrice} placeholder="ไม่จำกัด" /></label>
-          <label className="field"><span>เรียงรายการ</span><select name="sort" defaultValue={filters.sort}><option value="newest">ใหม่ไปเก่า</option><option value="oldest">เก่าไปใหม่</option></select></label>
-          <details className="province-picker" open><summary>จังหวัดที่เลือก: {filters.provinces.length || "ทั้งหมด"}</summary><div className="province-grid">{ISAN_PROVINCES.map((province)=><label key={province}><input type="checkbox" name="province" value={province} defaultChecked={filters.provinces.includes(province)} /><span>{province}</span></label>)}</div></details>
-          <div className="filter-actions"><button className="primary" type="submit">ค้นหา</button><a className="secondary" href="/">ล้างตัวกรอง</a></div>
-        </form>
-      </section>
-
-      <section id="results" className="results-section">
+      <section id="results" className="results-section" hidden={view !== 'search'}>
+        {projects.unavailable ? <p role="alert">อ่านข้อมูลไม่สำเร็จ กรุณาลองใหม่ ยังยืนยันจำนวนโครงการไม่ได้</p> : null}
         <div className="section-heading"><div><h2>พบ {number(projects.total)} โครงการ</h2><p>รายการที่ระบบค้นพบ ไม่ได้ยืนยันว่ายังเปิดรับข้อเสนอ กรุณาตรวจสอบกับ e-GP ก่อนดำเนินการ</p></div><a className="secondary" href={`/api/export/projects?${exportParams}`}>ดาวน์โหลด CSV</a></div>
         {projects.items?.length ? <><div className="project-list">{projects.items.map((project)=><article className="project-card" key={project.id}>
           <div className="project-tags"><span>{project.province || "ไม่ระบุจังหวัด"}</span>{project.category ? <span>{project.category}</span> : null}{project.subcategory ? <span>{project.subcategory}</span> : null}<span>ปี {project.fiscal_year}</span></div>
@@ -255,12 +267,14 @@ export default async function Home({ searchParams }) {
         </article>)}</div><nav className="pagination" aria-label="เปลี่ยนหน้าผลค้นหา">{filters.offset > 0 ? <a className="secondary" href={`/?${previousParams}#results`}>หน้าก่อนหน้า</a> : <span /> }<span>หน้า {number(Math.floor(filters.offset / projects.limit) + 1)} / {number(Math.max(1, Math.ceil(projects.total / projects.limit)))}</span>{filters.offset + projects.limit < projects.total ? <a className="secondary" href={`/?${nextParams}#results`}>หน้าถัดไป</a> : <span />}</nav></> : <div className="empty-state"><strong>ยังไม่พบโครงการตามตัวกรองนี้</strong><span>{totals.projects ? "ลองล้างตัวกรองหรือเลือกจังหวัดเพิ่ม" : "ระบบกำลังนำเข้าข้อมูลชุดแรก เมื่อพร้อมรายการจะแสดงที่หน้านี้อัตโนมัติ"}</span></div>}
       </section>
 
-      <section id="company-work" className="results-section company-section">
+      <section id="company-work" className="results-section company-section" hidden={view !== 'company'}>
+        <a className="secondary" href={`/api/export/projects?${apiParams(filters)}&dataset=company`}>ดาวน์โหลด CSV ผลงานบริษัท</a>
         <div className="section-heading"><div><h2>ผลงานจริงของบริษัท</h2><p>แสดงเฉพาะสัญญาที่บริษัทของเราเป็นผู้ชนะ แยกจากโครงการตลาดอย่างชัดเจน</p></div></div>
-        <div className="company-metrics"><div><span>สัญญาที่พบ</span><strong>{number(companyWork.totals?.project_count)}</strong></div><div><span>มูลค่ารวม</span><strong>{shortMoney(companyWork.totals?.winning_price_sat)} บาท</strong></div><div><span>บริษัทที่พบ</span><strong>{number(companyWork.totals?.company_count)}</strong></div></div>
-        {companyWork.items?.length ? <div className="company-table-wrap"><table><thead><tr><th>โครงการ</th><th>หมวด</th><th>จังหวัด/หน่วยงาน</th><th>มูลค่า</th></tr></thead><tbody>{companyWork.items.map((item)=><tr key={item.id}><td><strong>{item.title}</strong><small>{thaiDate(item.announcement_date_iso)}</small></td><td>{item.category || "ผลงานอื่น ๆ"}<small>{item.subcategory}</small></td><td>{item.province || "ไม่ระบุจังหวัด"}<small>{item.agency_name}</small></td><td className="money-cell">{money(item.winning_price_sat)}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>กำลังรอข้อมูลผลงานบริษัท</strong><span>เมื่อสัญญาถูก normalize แล้ว รายการจะแสดงในส่วนนี้เท่านั้นและจะไม่ปนกับผลค้นหาตลาด</span></div>}
+        <div className="company-metrics"><div><span>สัญญาที่พบ</span><strong>{number(companyWork.totals?.contract_count)}</strong></div><div><span>มูลค่ารวม</span><strong>{shortMoney(companyWork.totals?.winning_price_sat)} บาท</strong></div><div><span>บริษัทที่พบ</span><strong>{number(companyWork.totals?.company_count)}</strong></div></div>
+        {companyWork.items?.length ? <div className="company-table-wrap"><table><thead><tr><th>โครงการ</th><th>หมวด</th><th>จังหวัด/หน่วยงาน</th><th>มูลค่า</th></tr></thead><tbody>{companyWork.items.map((item)=><tr key={item.award_id || item.id}><td><strong>{item.title}</strong><small>{thaiDate(item.announcement_date_iso)}</small></td><td>{item.category || "ผลงานอื่น ๆ"}<small>{item.subcategory}</small></td><td>{item.province || "ไม่ระบุจังหวัด"}<small>{item.agency_name}</small></td><td className="money-cell">{money(item.winning_price_sat)}</td></tr>)}</tbody></table></div> : <div className="empty-state"><strong>กำลังรอข้อมูลผลงานบริษัท</strong><span>เมื่อสัญญาถูก normalize แล้ว รายการจะแสดงในส่วนนี้เท่านั้นและจะไม่ปนกับผลค้นหาตลาด</span></div>}
       </section>
 
+      {view === 'company' && companyWork.total > 25 ? <nav className="pagination" aria-label="เปลี่ยนหน้าผลงานบริษัท">{filters.offset > 0 ? <a className="secondary" href={`/?${previousParams}`}>หน้าก่อนหน้า</a> : <span />}<span>หน้า {Math.floor(filters.offset / 25) + 1}</span>{filters.offset + 25 < companyWork.total ? <a className="secondary" href={`/?${nextParams}`}>หน้าถัดไป</a> : null}</nav> : null}
       {reviews.items?.length ? <section id="review-queue" className="results-section review-section">
         <div className="section-heading"><div><h2>รายการรอตรวจ</h2><p>โครงการที่ระบบพบสินค้าเป้าหมาย แต่หลักฐานหมวดหรือพื้นที่ยังไม่ชัดพอสำหรับรายงานหลัก</p></div></div>
         <div className="review-list">{reviews.items.map((item) => <article key={item.id}>

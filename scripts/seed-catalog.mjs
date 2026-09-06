@@ -144,10 +144,11 @@ async function failCapture(runId, reason) {
   });
 }
 
-async function captureStatus(fiscalYear, resourceId) {
+async function captureStatus(fiscalYear, resourceId, sourceVersion) {
   const url = new URL(`${workerUrl.replace(/\/$/, "")}/internal/capture-status`);
   url.searchParams.set("fiscalYear", String(fiscalYear));
   url.searchParams.set("resourceId", resourceId);
+  url.searchParams.set('sourceVersion', sourceVersion);
   const response = await fetch(url, { headers: { authorization: `Bearer ${controlToken}` } });
   if (!response.ok) throw new Error(`capture status returned HTTP ${response.status}`);
   return (await response.json()).capture;
@@ -179,12 +180,19 @@ async function writeCompletedCaptureState(state) {
   await writeFile(completedStatePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-const initialState = localUpload ? await readCaptureState() : {};
-const activeResourceId = Object.keys(initialState)[0]?.split(":")[1] ?? process.env.RESOURCE_ID ?? null;
-let remainingResources = resourceLimit;
-const fiscalYears = Array.from({ length: years[1] - years[0] + 1 }, (_, index) => years[1] - index);
 
-catalog: for (const fiscalYear of fiscalYears) {
+const catalogCachePath = '.bit-gov-catalog-cache.json';
+let catalogCache;
+try { catalogCache = JSON.parse(await readFile(catalogCachePath, 'utf8')); }
+catch (error) { if (error.code !== 'ENOENT') throw error; catalogCache = {}; }
+async function cacheResources(fiscalYear, resources) {
+  catalogCache[fiscalYear] = { checkedAt: new Date().toISOString(), resources };
+  await writeFile(catalogCachePath, JSON.stringify(catalogCache), 'utf8');
+  return resources;
+}
+async function discoverResources(fiscalYear) {
+  const cached = catalogCache[fiscalYear];
+  if (!discoveryOnly && cached && Date.now() - Date.parse(cached.checkedAt) < 24 * 3600 * 1000) return cached.resources;
   const title = titleFor(fiscalYear);
   let search;
   try {
@@ -197,7 +205,7 @@ catalog: for (const fiscalYear of fiscalYears) {
   if (!dataset) {
     await recordCatalogCoverage({ fiscalYear, coverageStatus: "unavailable" });
     console.log(`${fiscalYear}: unavailable`);
-    continue;
+    return cacheResources(fiscalYear, []);
   }
   let detail;
   try {
@@ -207,7 +215,7 @@ catalog: for (const fiscalYear of fiscalYears) {
     throw error;
   }
   const discoveredResources = (detail.resources ?? []).filter((resource) =>
-    String(resource.format ?? "").toUpperCase() === "CSV" && resource.datastore_active === true && typeof resource.url === "string",
+    String(resource.format ?? "").toUpperCase() === "CSV" && typeof resource.url === "string",
   );
   await recordCatalogCoverage({
     fiscalYear,
@@ -215,6 +223,17 @@ catalog: for (const fiscalYear of fiscalYears) {
     datasetId: dataset.id,
     resourceCount: discoveredResources.length,
   });
+
+  return cacheResources(fiscalYear, discoveredResources);
+}
+
+const initialState = localUpload ? await readCaptureState() : {};
+const activeResourceId = Object.keys(initialState)[0]?.split(":")[1] ?? process.env.RESOURCE_ID ?? null;
+let remainingResources = resourceLimit;
+const fiscalYears = Array.from({ length: years[1] - years[0] + 1 }, (_, index) => years[1] - index);
+
+catalog: for (const fiscalYear of fiscalYears) {
+  const discoveredResources = await discoverResources(fiscalYear);
   if (discoveryOnly) {
     console.log(`${fiscalYear}: discovered ${discoveredResources.length} resource(s)`);
     continue;
@@ -225,7 +244,7 @@ catalog: for (const fiscalYear of fiscalYears) {
       const state = await readCaptureState();
       const stateKey = `${fiscalYear}:${resource.id}:${resource.last_modified || resource.hash || "unknown"}`;
       const previous = state[stateKey];
-      const remote = previous ? null : await captureStatus(fiscalYear, resource.id);
+      const remote = previous ? null : await captureStatus(fiscalYear, resource.id, resource.last_modified || resource.hash || 'unknown');
       if (!previous && remote?.status === "succeeded") {
         console.log(`${fiscalYear}: already completed ${resource.id}`);
         continue;

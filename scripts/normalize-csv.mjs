@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { readFile, writeFile } from "node:fs/promises";
 import { repairCsvHeaders } from "../packages/ingestion/src/index.js";
+import { csvRecords } from "../packages/ingestion/src/csv-stream.js";
 
 const controlToken = process.env.INGESTION_CONTROL_TOKEN;
 const workerUrl = process.env.INGESTION_WORKER_URL;
@@ -11,6 +12,7 @@ const fiscalYear = Number(process.env.FISCAL_YEAR);
 const sourceVersion = process.env.SOURCE_VERSION;
 const batchSize = Number(process.env.NORMALIZE_BATCH_SIZE ?? 10);
 const maxRows = Number(process.env.NORMALIZE_MAX_ROWS ?? Number.MAX_SAFE_INTEGER);
+const deadline = Date.now() + Number(process.env.NORMALIZE_MAX_MILLISECONDS ?? Number.MAX_SAFE_INTEGER);
 const statePath = process.env.NORMALIZE_STATE_PATH ?? ".bit-gov-normalization-state.json";
 
 if (!controlToken || !workerUrl || !sourceUrl || !runId || !resourceId || !sourceVersion || !Number.isInteger(fiscalYear)) {
@@ -18,40 +20,6 @@ if (!controlToken || !workerUrl || !sourceUrl || !runId || !resourceId || !sourc
 }
 if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) throw new Error("NORMALIZE_BATCH_SIZE must be 1..100");
 
-async function* csvRows(chunks) {
-  const decoder = new TextDecoder("utf-8");
-  let field = "";
-  let row = [];
-  let inQuotes = false;
-  let pendingQuote = false;
-  for await (const chunk of chunks) {
-    const text = decoder.decode(chunk, { stream: true });
-    for (let index = 0; index < text.length; index += 1) {
-      let character = text[index];
-      if (pendingQuote) {
-        pendingQuote = false;
-        if (character === '"') { field += '"'; continue; }
-        inQuotes = false;
-      }
-      if (inQuotes) {
-        if (character === '"') {
-          if (index + 1 < text.length && text[index + 1] === '"') { field += '"'; index += 1; }
-          else if (index + 1 === text.length) pendingQuote = true;
-          else inQuotes = false;
-        } else field += character;
-        continue;
-      }
-      if (character === '"' && field.length === 0) { inQuotes = true; continue; }
-      if (character === ",") { row.push(field); field = ""; continue; }
-      if (character === "\n") { row.push(field); field = ""; yield row; row = []; continue; }
-      if (character !== "\r") field += character;
-    }
-  }
-  const tail = decoder.decode();
-  if (tail) field += tail;
-  if (inQuotes || pendingQuote) throw new Error("CSV ended inside a quoted field");
-  if (field.length || row.length) { row.push(field); yield row; }
-}
 
 async function sourceCsvChunks() {
   const response = await fetch(sourceUrl);
@@ -65,7 +33,7 @@ function rangeFromKey(key) {
   return { start: Number(match[1]), end: Number(match[2]) };
 }
 
-async function* r2CsvChunks() {
+async function* r2CsvChunks(startByte = 0) {
   const manifestUrl = new URL(`${workerUrl.replace(/\/$/, "")}/internal/raw-csv-manifest`);
   manifestUrl.searchParams.set("fiscalYear", String(fiscalYear));
   manifestUrl.searchParams.set("resourceId", resourceId);
@@ -78,6 +46,8 @@ async function* r2CsvChunks() {
   let expectedStart = 0;
   for (const chunk of chunks) {
     if (chunk.start !== expectedStart) throw new Error("Raw manifest has a gap or overlapping chunks");
+    expectedStart = chunk.end + 1;
+    if (chunk.end < startByte) continue;
     const chunkUrl = new URL(`${workerUrl.replace(/\/$/, "")}/internal/raw-csv-chunk`);
     chunkUrl.searchParams.set("fiscalYear", String(fiscalYear));
     chunkUrl.searchParams.set("resourceId", resourceId);
@@ -89,18 +59,18 @@ async function* r2CsvChunks() {
     const bytes = new Uint8Array(await response.arrayBuffer());
     if (bytes.byteLength !== chunk.end - chunk.start + 1) throw new Error("Raw chunk length does not match its manifest");
     expectedStart = chunk.end + 1;
-    yield bytes;
+    yield bytes.subarray(Math.max(0, startByte - chunk.start));
   }
   if (expectedStart !== manifest.totalBytes) throw new Error("Raw manifest total length does not match its chunks");
 }
 
-async function submit(records) {
+async function submit(records, rowStart) {
   let lastError;
   for (let attempt = 0; attempt < 4; attempt += 1) {
     const response = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/normalize-records`, {
       method: "POST",
       headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
-      body: JSON.stringify({ runId, fiscalYear, resourceId, sourceVersion, records }),
+      body: JSON.stringify({ runId, fiscalYear, resourceId, sourceVersion, records, rowStart }),
     });
     if (response.ok) return response.json();
     const detail = (await response.text()).replace(/\s+/g, " ").slice(0, 180);
@@ -108,9 +78,10 @@ async function submit(records) {
     if (response.status < 500 || attempt === 3) break;
     await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
   }
-  if (records.length > 1) {
+  if (records.length > 1 && /HTTP 413/.test(lastError?.message ?? '')) {
     const midpoint = Math.ceil(records.length / 2);
-    const [left, right] = await Promise.all([submit(records.slice(0, midpoint)), submit(records.slice(midpoint))]);
+    const left = await submit(records.slice(0, midpoint), rowStart);
+    const right = await submit(records.slice(midpoint), rowStart + midpoint);
     return {
       sourceCount: left.sourceCount + right.sourceCount,
       acceptedCount: left.acceptedCount + right.acceptedCount,
@@ -132,14 +103,19 @@ async function writeState(state) {
 
 const state = await readState();
 const resumeFrom = Number(state[runId]?.processedRows ?? 0);
-let headers;
+const startByte = process.env.NORMALIZE_INPUT === 'r2' ? Number(state[runId]?.nextByte ?? 0) : 0;
+let headers = startByte ? state[runId].headers : null;
 let batch = [];
-let rowCount = 0;
+let rowCount = startByte ? resumeFrom : 0;
 let acceptedCount = 0;
 let duplicateCount = 0;
 let quarantineCount = 0;
-const input = process.env.NORMALIZE_INPUT === "r2" ? r2CsvChunks() : await sourceCsvChunks();
-for await (const row of csvRows(input)) {
+let nextByte = startByte;
+let reachedLimit = false;
+const input = process.env.NORMALIZE_INPUT === "r2" ? r2CsvChunks(startByte) : await sourceCsvChunks();
+for await (const record of csvRecords(input, startByte)) {
+  const { row } = record;
+  nextByte = record.nextByte;
   if (!headers) { headers = row.map((value) => value.replace(/^\uFEFF/, "").trim()); continue; }
   rowCount += 1;
   if (rowCount <= resumeFrom) continue;
@@ -148,25 +124,41 @@ for await (const row of csvRows(input)) {
     ? Object.fromEntries(headers.map((header, index) => [header, row[index]]))
     : { _ingestion_parse_error: "csv_column_count_mismatch", _source_row_number: String(rowCount) });
   if (batch.length === batchSize || rowCount - resumeFrom >= maxRows) {
-    const result = await submit(batch);
+    const result = await submit(batch, rowCount - batch.length);
     acceptedCount += result.acceptedCount;
     duplicateCount += result.duplicateCount;
     quarantineCount += result.quarantineCount;
     batch = [];
-    state[runId] = { processedRows: rowCount, updatedAt: new Date().toISOString() };
+    state[runId] = { processedRows: rowCount, nextByte, headers, updatedAt: new Date().toISOString() };
     await writeState(state);
-    if (rowCount - resumeFrom >= maxRows) break;
+    if (rowCount - resumeFrom >= maxRows || Date.now() >= deadline) { reachedLimit = true; break; }
   }
 }
 if (batch.length) {
-  const result = await submit(batch);
+  const result = await submit(batch, rowCount - batch.length);
   acceptedCount += result.acceptedCount;
   duplicateCount += result.duplicateCount;
   quarantineCount += result.quarantineCount;
-  state[runId] = { processedRows: rowCount, updatedAt: new Date().toISOString() };
+  state[runId] = { processedRows: rowCount, nextByte, headers, updatedAt: new Date().toISOString() };
   await writeState(state);
 }
-if (rowCount - resumeFrom < maxRows) {
+if (!reachedLimit) {
+  const response = await fetch(`${workerUrl.replace(/\/$/, '')}/internal/complete-normalization`, {
+    method: 'POST', headers: { authorization: `Bearer ${controlToken}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ runId, rowCount, totalBytes: nextByte }),
+  });
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    if (response.status === 409 && detail.error === 'normalization_ledger_incomplete') {
+      // Older checkpoints predate the ledger. Replay from immutable R2; existing batches are idempotent.
+      // Keep an explicit state entry so normalize-next-capture cannot mark this file complete.
+      state[runId] = { processedRows: 0, updatedAt: new Date().toISOString(), replayReason: detail.error };
+      await writeState(state);
+      console.log(JSON.stringify({ runId, replayRequired: true }));
+      process.exit(0);
+    }
+    throw new Error(`normalization completion returned HTTP ${response.status}`);
+  }
   delete state[runId];
   await writeState(state);
 }

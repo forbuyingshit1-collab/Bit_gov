@@ -10,7 +10,7 @@ $runner = Join-Path $root 'scripts\run-capture-window.ps1'
 if (-not (Test-Path -LiteralPath $runner)) { throw "Capture runner not found: $runner" }
 
 $at = [DateTime]::ParseExact($DailyAt, 'HH:mm', [Globalization.CultureInfo]::InvariantCulture)
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -WindowMinutes 4 -NormalizeMaxRows 2000" -WorkingDirectory $root
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -WindowMinutes 4 -NormalizeMaxRows 50000" -WorkingDirectory $root
 $trigger = New-ScheduledTaskTrigger -Daily -At $at
 $settings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `

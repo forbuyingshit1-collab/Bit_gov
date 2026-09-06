@@ -6,6 +6,8 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
+.main-nav a[aria-current="page"] { background: #173f66; color: white; }
 
 body { margin: 0; background: #f6f8fb; }
 

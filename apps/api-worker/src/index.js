@@ -1,3 +1,4 @@
+import { publishedCoverage } from './coverage.js';
 const json = (body, status = 200) =>
   Response.json(body, {
     status,
@@ -77,7 +78,9 @@ async function status(db) {
           : yearResources.some((resource) => resource.status === "running") ? "capturing" : "incomplete",
     };
   });
-  return { environment: "staging", latestRun, totals, coverage, resources };
+  const verifiedCoverage = await publishedCoverage(db);
+  return { environment: "staging", latestRun, totals, coverage: verifiedCoverage, resources,
+    data_gate_passed: verifiedCoverage.every(x => x.gate_passed) && totals.unresolved_errors === 0 };
 }
 
 function positiveInteger(value, fallback, maximum) {
@@ -96,7 +99,7 @@ function provinces(value) {
 }
 
 async function searchProjects(db, url, maximumLimit = 100) {
-  const where = [
+  const where = url.searchParams.get('scope') === 'all' ? [] : [
     "EXISTS (SELECT 1 FROM product_matches approved_product WHERE approved_product.project_id = p.id AND approved_product.decision_status IN ('auto_approved', 'approved'))",
     "EXISTS (SELECT 1 FROM location_matches approved_location WHERE approved_location.project_id = p.id AND approved_location.decision_status IN ('auto_approved', 'approved'))",
   ];
@@ -120,8 +123,8 @@ async function searchProjects(db, url, maximumLimit = 100) {
   }
   const query = url.searchParams.get("q")?.trim();
   if (query) {
-    where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.name LIKE ?))");
-    values.push(`%${query}%`, `%${query}%`, `%${query}%`);
+    where.push("(instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.agency_name), lower(?)) > 0 OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND instr(lower(s.name), lower(?)) > 0))");
+    values.push(query, query, query);
   }
   const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
   if (minPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) >= ?"); values.push(minPrice); }
@@ -145,8 +148,9 @@ async function searchProjects(db, url, maximumLimit = 100) {
   return { total: count?.count ?? 0, limit, offset, items: result.results ?? [] };
 }
 
-function csvCell(value) {
-  const text = String(value ?? "");
+export function csvCell(value) {
+  let text = String(value ?? "");
+  if (/^[\s]*[=+@-]/.test(text)) text = `'${text}`;
   return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
@@ -175,8 +179,8 @@ async function marketSummary(db, url) {
   if (subcategory) { where.push("pm.subcategory = ?"); values.push(subcategory); }
   const query = url.searchParams.get("q")?.trim();
   if (query) {
-    where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.name LIKE ?))");
-    values.push(`%${query}%`, `%${query}%`, `%${query}%`);
+    where.push("(instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.agency_name), lower(?)) > 0 OR EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND instr(lower(s.name), lower(?)) > 0))");
+    values.push(query, query, query);
   }
   const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
   if (minPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) >= ?"); values.push(minPrice); }
@@ -184,9 +188,9 @@ async function marketSummary(db, url) {
   if (maxPrice !== null) { where.push("COALESCE((SELECT c.winning_price_sat FROM contracts c WHERE c.project_id = p.id LIMIT 1), p.budget_sat, 0) <= ?"); values.push(maxPrice); }
   const predicate = `WHERE ${where.join(" AND ")}`;
   const [categories, provinceRows, months] = await Promise.all([
-    db.prepare(`SELECT pm.category AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} GROUP BY pm.category ORDER BY budget_sat DESC`).bind(...values).all(),
-    db.prepare(`SELECT p.province AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} GROUP BY p.province ORDER BY budget_sat DESC LIMIT 20`).bind(...values).all(),
-    db.prepare(`SELECT substr(p.announcement_date_iso, 1, 7) AS label, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(p.budget_sat, 0)) AS budget_sat FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} AND p.announcement_date_iso IS NOT NULL GROUP BY substr(p.announcement_date_iso, 1, 7) ORDER BY label`).bind(...values).all(),
+    db.prepare(`SELECT category AS label, COUNT(*) AS project_count, SUM(COALESCE(budget_sat, 0)) AS budget_sat FROM (SELECT DISTINCT p.id, p.budget_sat, pm.category FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate}) GROUP BY category ORDER BY budget_sat DESC`).bind(...values).all(),
+    db.prepare(`SELECT province AS label, COUNT(*) AS project_count, SUM(COALESCE(budget_sat, 0)) AS budget_sat FROM (SELECT DISTINCT p.id, p.budget_sat, p.province FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate}) GROUP BY province ORDER BY budget_sat DESC LIMIT 20`).bind(...values).all(),
+    db.prepare(`SELECT month AS label, COUNT(*) AS project_count, SUM(COALESCE(budget_sat, 0)) AS budget_sat FROM (SELECT DISTINCT p.id, p.budget_sat, substr(p.announcement_date_iso, 1, 7) AS month FROM projects p JOIN product_matches pm ON pm.project_id = p.id ${predicate} AND p.announcement_date_iso IS NOT NULL) GROUP BY month ORDER BY label`).bind(...values).all(),
   ]);
   return { categories: categories.results ?? [], provinces: provinceRows.results ?? [], months: months.results ?? [] };
 }
@@ -195,6 +199,11 @@ async function companyWork(db, url) {
   const companyNames = ["ไอคิวโอเอ โซลูชั่น", "ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี"];
   const where = [`s.normalized_name IN (${companyNames.map(() => "?").join(",")})`];
   const values = [...companyNames];
+  const company = url.searchParams.get('company');
+  if (company === 'iqoa' || company === 'southeast') {
+    where.push('s.normalized_name = ?');
+    values.push(companyNames[company === 'iqoa' ? 0 : 1]);
+  }
   const selectedProvinces = provinces(url.searchParams.get("provinces"));
   if (selectedProvinces.length) { where.push(`p.province IN (${selectedProvinces.map(() => "?").join(",")})`); values.push(...selectedProvinces); }
   const fiscalYear = optionalNonNegativeInteger(url.searchParams.get("fiscalYear"));
@@ -204,7 +213,7 @@ async function companyWork(db, url) {
   const subcategory = url.searchParams.get("subcategory")?.trim();
   if (subcategory) { where.push("EXISTS (SELECT 1 FROM product_matches pm WHERE pm.project_id = p.id AND pm.subcategory = ?)"); values.push(subcategory); }
   const query = url.searchParams.get("q")?.trim();
-  if (query) { where.push("(p.title LIKE ? OR p.agency_name LIKE ? OR s.name LIKE ?)"); values.push(`%${query}%`, `%${query}%`, `%${query}%`); }
+  if (query) { where.push("(instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.agency_name), lower(?)) > 0 OR instr(lower(s.name), lower(?)) > 0)"); values.push(query, query, query); }
   const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
   if (minPrice !== null) { where.push("COALESCE(a.winning_price_sat, p.budget_sat, 0) >= ?"); values.push(minPrice); }
   const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
@@ -212,15 +221,17 @@ async function companyWork(db, url) {
   const direction = url.searchParams.get("sort") === "oldest" ? "ASC" : "DESC";
   const predicate = `WHERE ${where.join(" AND ")}`;
   const joins = "FROM awards a JOIN projects p ON p.id = a.project_id JOIN suppliers s ON s.id = a.supplier_id";
+  const limit = positiveInteger(url.searchParams.get('limit'), 25, 100);
+  const offset = optionalNonNegativeInteger(url.searchParams.get('offset')) ?? 0;
   const [totals, items] = await Promise.all([
-    db.prepare(`SELECT COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(a.winning_price_sat, 0)) AS winning_price_sat, COUNT(DISTINCT s.id) AS company_count ${joins} ${predicate}`).bind(...values).first(),
-    db.prepare(`SELECT p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
+    db.prepare(`SELECT COUNT(*) AS contract_count, COUNT(DISTINCT p.id) AS project_count, SUM(COALESCE(a.winning_price_sat, 0)) AS winning_price_sat, COUNT(DISTINCT s.id) AS company_count ${joins} ${predicate}`).bind(...values).first(),
+    db.prepare(`SELECT a.id AS award_id, p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
       a.winning_price_sat, s.name AS winner_name,
       (SELECT category FROM product_matches pm WHERE pm.project_id = p.id LIMIT 1) AS category,
       (SELECT subcategory FROM product_matches pm WHERE pm.project_id = p.id LIMIT 1) AS subcategory
-      ${joins} ${predicate} ORDER BY p.announcement_date_iso ${direction}, p.id ${direction} LIMIT 100`).bind(...values).all(),
+      ${joins} ${predicate} ORDER BY p.announcement_date_iso ${direction}, a.id ${direction} LIMIT ? OFFSET ?`).bind(...values, limit, offset).all(),
   ]);
-  return { totals: totals ?? { project_count: 0, winning_price_sat: 0, company_count: 0 }, items: items.results ?? [] };
+  return { totals: totals ?? {}, total: totals?.contract_count ?? 0, limit, offset, items: items.results ?? [] };
 }
 
 async function recommendations(db, url) {
@@ -236,7 +247,7 @@ async function recommendations(db, url) {
   const subcategory = url.searchParams.get("subcategory")?.trim();
   if (subcategory) { candidateWhere.push("pm.subcategory = ?"); candidateValues.push(subcategory); }
   const query = url.searchParams.get("q")?.trim();
-  if (query) { candidateWhere.push("(p.title LIKE ? OR p.agency_name LIKE ?)"); candidateValues.push(`%${query}%`, `%${query}%`); }
+  if (query) { candidateWhere.push("(instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.agency_name), lower(?)) > 0)"); candidateValues.push(query, query); }
   const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
   if (minPrice !== null) { candidateWhere.push("COALESCE(p.budget_sat, 0) >= ?"); candidateValues.push(minPrice); }
   const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
@@ -253,6 +264,9 @@ async function recommendations(db, url) {
      ), candidates AS (
        SELECT p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
          p.budget_sat, pm.category, pm.subcategory,
+         EXISTS (SELECT 1 FROM company_projects h WHERE h.category = pm.category) AS category_fit,
+         EXISTS (SELECT 1 FROM company_projects h WHERE h.province = p.province) AS province_fit,
+         EXISTS (SELECT 1 FROM company_projects h WHERE h.agency_name = p.agency_name) AS agency_fit,
          30
          + 25 * EXISTS (SELECT 1 FROM company_projects h WHERE h.category = pm.category)
          + 20 * EXISTS (SELECT 1 FROM company_projects h WHERE h.province = p.province)
@@ -264,12 +278,13 @@ async function recommendations(db, url) {
          AND NOT EXISTS (SELECT 1 FROM awards a JOIN suppliers s ON s.id = a.supplier_id WHERE a.project_id = p.id AND s.normalized_name IN (?, ?))
      )
      SELECT *, CASE WHEN opportunity_score >= 75 THEN 'สูง' WHEN opportunity_score >= 50 THEN 'กลาง' ELSE 'ต่ำ' END AS opportunity_level
-     FROM candidates ORDER BY opportunity_score DESC, announcement_date_iso ${direction} LIMIT 25`,
+     FROM candidates WHERE opportunity_score >= 75 ORDER BY opportunity_score DESC, announcement_date_iso ${direction} LIMIT 25`,
   ).bind(...values, ...companyNames).all();
-  return { methodology: "historical_similarity_v1", warning: "historical_record_not_open_tender_confirmation", items: result.results ?? [] };
+  return { methodology: "historical_similarity_v1", warning: "historical_record_not_open_tender_confirmation", items: (result.results ?? []).map(item => ({ ...item, match_reasons: [item.category_fit && 'หมวดตรงกับผลงานบริษัท', item.province_fit && 'จังหวัดที่บริษัทเคยมีผลงาน', item.agency_fit && 'หน่วยงานที่บริษัทเคยมีผลงาน'].filter(Boolean) })) };
 }
 
 async function forecast(db, url) {
+  if (!(await publishedCoverage(db)).every(x => x.gate_passed)) return { items: [], state: 'awaiting_validated_history', warning: 'forecast_not_open_tender_confirmation' };
   const companyNames = ["ไอคิวโอเอ โซลูชั่น", "ไอคิว เซ้าท์อีสต์ โอเอ อุดรธานี"];
   const where = [
     "pm.decision_status IN ('auto_approved', 'approved')",
@@ -285,7 +300,7 @@ async function forecast(db, url) {
   const subcategory = url.searchParams.get("subcategory")?.trim();
   if (subcategory) { where.push("pm.subcategory = ?"); values.push(subcategory); }
   const query = url.searchParams.get("q")?.trim();
-  if (query) { where.push("(p.title LIKE ? OR p.agency_name LIKE ?)"); values.push(`%${query}%`, `%${query}%`); }
+  if (query) { where.push("(instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.agency_name), lower(?)) > 0)"); values.push(query, query); }
   const minPrice = optionalNonNegativeInteger(url.searchParams.get("minPriceSat"));
   if (minPrice !== null) { where.push("COALESCE(p.budget_sat, 0) >= ?"); values.push(minPrice); }
   const maxPrice = optionalNonNegativeInteger(url.searchParams.get("maxPriceSat"));
@@ -342,10 +357,24 @@ async function forecast(db, url) {
 
 async function reviewQueue(db, url) {
   const limit = positiveInteger(url.searchParams.get("limit"), 25, 100);
-  const pending = `EXISTS (SELECT 1 FROM product_matches x WHERE x.project_id = p.id AND x.decision_status = 'pending_review')
-    OR EXISTS (SELECT 1 FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review')`;
+  const clauses = [`(EXISTS (SELECT 1 FROM product_matches x WHERE x.project_id = p.id AND x.decision_status = 'pending_review')
+    OR EXISTS (SELECT 1 FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review'))`];
+  const values = [];
+  const selected = provinces(url.searchParams.get('provinces'));
+  if (selected.length) { clauses.push(`p.province IN (${selected.map(() => '?').join(',')})`); values.push(...selected); }
+  for (const [param, column] of [['fiscalYear','p.fiscal_year'],['minPriceSat','p.budget_sat'],['maxPriceSat','p.budget_sat']]) {
+    const value = optionalNonNegativeInteger(url.searchParams.get(param));
+    if (value !== null) { clauses.push(`${column} ${param === 'minPriceSat' ? '>=' : param === 'maxPriceSat' ? '<=' : '='} ?`); values.push(value); }
+  }
+  for (const column of ['category','subcategory']) {
+    if (url.searchParams.get(column)) { clauses.push(`EXISTS (SELECT 1 FROM product_matches x WHERE x.project_id=p.id AND x.${column}=?)`); values.push(url.searchParams.get(column)); }
+  }
+  if (url.searchParams.get('q')) { clauses.push('(instr(lower(p.title), lower(?)) > 0 OR instr(lower(p.agency_name), lower(?)) > 0)'); values.push(url.searchParams.get('q'), url.searchParams.get('q')); }
+  const pending = clauses.join(' AND ');
+  const direction = url.searchParams.get('sort') === 'oldest' ? 'ASC' : 'DESC';
+  const offset = optionalNonNegativeInteger(url.searchParams.get('offset')) ?? 0;
   const [count, items] = await Promise.all([
-    db.prepare(`SELECT COUNT(*) AS count FROM projects p WHERE ${pending}`).first(),
+    db.prepare(`SELECT COUNT(*) AS count FROM projects p WHERE ${pending}`).bind(...values).first(),
     db.prepare(
       `SELECT p.id, p.project_code, p.title, p.agency_name, p.province, p.fiscal_year, p.announcement_date_iso,
         (SELECT category FROM product_matches x WHERE x.project_id = p.id ORDER BY x.decision_status = 'pending_review' DESC LIMIT 1) AS category,
@@ -355,8 +384,8 @@ async function reviewQueue(db, url) {
         (SELECT confidence FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review' LIMIT 1) AS location_confidence,
         (SELECT match_reason FROM location_matches y WHERE y.project_id = p.id AND y.decision_status = 'pending_review' LIMIT 1) AS location_match_reason
        FROM projects p WHERE ${pending}
-       ORDER BY p.announcement_date_iso DESC, p.id DESC LIMIT ?`,
-    ).bind(limit).all(),
+       ORDER BY p.announcement_date_iso ${direction}, p.id ${direction} LIMIT ? OFFSET ?`,
+    ).bind(...values, limit, offset).all(),
   ]);
   return { total: count?.count ?? 0, items: items.results ?? [] };
 }
@@ -383,8 +412,8 @@ async function decideReview(db, body) {
   } else {
     const status = decision === "approve" ? "approved" : "rejected";
     statements.push(
-      db.prepare("UPDATE product_matches SET decision_status = ? WHERE project_id = ? AND decision_status = 'pending_review'").bind(status, projectId),
-      db.prepare("UPDATE location_matches SET decision_status = ? WHERE project_id = ? AND decision_status = 'pending_review'").bind(status, projectId),
+      db.prepare("UPDATE product_matches SET decision_status = ? WHERE project_id = ?").bind(status, projectId),
+      db.prepare("UPDATE location_matches SET decision_status = ? WHERE project_id = ?").bind(status, projectId),
     );
   }
   await db.batch(statements);
@@ -408,9 +437,16 @@ export default {
     }
 
     if (request.method === "GET" && url.pathname === "/v1/export/projects.csv") {
-      url.searchParams.set("limit", "5000");
-      url.searchParams.set("offset", "0");
-      const projects = await searchProjects(env.DB, url, 5000);
+      url.searchParams.set('limit', '100');
+      url.searchParams.set('offset', '0');
+      const projects = await searchProjects(env.DB, url);
+      if (projects.total > 5000) return json({ error: 'export_too_large', total: projects.total, maximum: 5000, message: 'กรุณาเลือกจังหวัด ปี หรือช่วงราคาให้เหลือไม่เกิน 5,000 โครงการ' }, 422);
+      while (projects.items.length < projects.total) {
+        url.searchParams.set('offset', String(projects.items.length));
+        const next = await searchProjects(env.DB, url);
+        if (!next.items.length) return json({ error: 'export_data_changed_retry' }, 409);
+        projects.items.push(...next.items);
+      }
       return new Response(projectCsv(projects.items), { headers: {
         "content-type": "text/csv; charset=utf-8",
         "content-disposition": "attachment; filename=bit-gov-projects.csv",
@@ -424,6 +460,18 @@ export default {
     }
     if (request.method === "GET" && url.pathname === "/v1/company-work") {
       return json(await companyWork(env.DB, url));
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/export/company.csv') {
+      url.searchParams.set('limit', '100'); url.searchParams.set('offset', '0');
+      const data = await companyWork(env.DB, url);
+      if (data.total > 5000) return json({ error: 'export_too_large', message: 'กรุณากรองให้เหลือไม่เกิน 5,000 สัญญา' }, 422);
+      while (data.items.length < data.total) {
+        url.searchParams.set('offset', String(data.items.length));
+        const next = await companyWork(env.DB, url);
+        if (!next.items.length) return json({ error: 'export_data_changed_retry' }, 409);
+        data.items.push(...next.items);
+      }
+      return new Response(projectCsv(data.items), { headers: { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename=company-contracts.csv', 'cache-control': 'no-store' } });
     }
     if (request.method === "GET" && url.pathname === "/v1/recommendations") {
       return json(await recommendations(env.DB, url));

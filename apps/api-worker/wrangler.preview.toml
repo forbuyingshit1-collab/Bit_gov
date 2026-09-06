@@ -1,0 +1,12 @@
+name = "bit-gov-api-v2-preview"
+main = "src/index.js"
+compatibility_date = "2026-09-04"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "bit-gov-v2-staging"
+database_id = "57139692-e530-4f86-814f-95ea957dba18"
+migrations_dir = "../../packages/database/migrations"
+
+[vars]
+APP_ENV = "v2-preview"

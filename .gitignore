@@ -22,6 +22,8 @@ raw/
 .bit-gov-normalization-state.json
 .bit-gov-normalization-*.json
 .bit-gov-logs/
+.bit-gov-catalog-check-date
+.bit-gov-catalog-cache.json
 
 *.log
 .DS_Store

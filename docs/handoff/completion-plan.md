@@ -72,6 +72,9 @@ Complete the procurement-intelligence data migration and cut over the existing D
 
 ## Current status
 
+- Detailed implementation evidence and remaining gates: [2026-09-06 continuation](sprint-progress-2026-09-06.md). All three sprints remain open until data, intelligence and cutover verification complete.
+- Early measured capacity projection exceeds one D1 database; partitioning must be validated before full normalized backfill. Raw capture continues safely in R2.
+
 - Workers Paid, R2, D1 v2 and scheduled ingestion are active.
 - The Dashboard and API are currently healthy on the legacy data source.
 - D1 v2 ingestion is in progress; no cutover occurs until the gates above pass.

@@ -6,6 +6,8 @@ import {
   sha256Hex,
 } from "../../../packages/ingestion/src/index.js";
 
+import { hasCompleteBatchCoverage } from './normalization-proof.js';
+
 const SOURCE_ID = "data-go-th-ckan";
 // 8 MiB timed out through the authenticated Worker path in staging; 1 MiB was verified end-to-end.
 const DEFAULT_CSV_CHUNK_BYTES = 1 * 1024 * 1024;
@@ -498,7 +500,7 @@ export function supplierNaturalIdentity(supplier) {
     : `name:${supplier.normalizedName}`;
 }
 
-async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVersion, records }, env) {
+export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVersion, records, rowStart }, env) {
   assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
   if (!Array.isArray(records) || records.length === 0 || records.length > 100) {
     throw new Error("records must contain between 1 and 100 rows");
@@ -509,6 +511,18 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
       WHERE sync_runs.id = ? AND sr.id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'`,
   ).bind(runId, resourceDbId, fiscalYear).first();
   if (!run) throw new Error("Normalized records do not match an approved raw capture run");
+  let batchId = null;
+  let payloadChecksum = null;
+  if (rowStart !== undefined) {
+    assertInteger(rowStart, 'rowStart');
+    batchId = `${runId}:${rowStart}`;
+    payloadChecksum = await sha256Hex(JSON.stringify(records));
+    const previous = await env.DB.prepare('SELECT * FROM normalization_batches WHERE id = ?').bind(batchId).first();
+    if (previous) {
+      if (previous.payload_checksum !== payloadChecksum) throw new Error('batch_payload_changed');
+      return { sourceCount: previous.row_count, acceptedCount: previous.accepted_count, duplicateCount: previous.duplicate_count, quarantineCount: previous.quarantine_count };
+    }
+  }
 
   const observedAt = new Date().toISOString();
   const r2ObjectKey = csvManifestKey({ fiscalYear, resourceId, sourceVersion });
@@ -520,8 +534,11 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
   let duplicateCount = 0;
   let quarantineCount = 0;
 
-  for (const record of records) {
-    const fingerprint = await fingerprintRecord(resourceId, record);
+  const fingerprints = await Promise.all(records.map(record => fingerprintRecord(resourceId, record)));
+  const seen = await existingRawRecordIds(env.DB, fingerprints.map(fingerprint => `raw:${fingerprint}`));
+  for (let index = 0; index < records.length; index++) {
+    const record = records[index];
+    const fingerprint = fingerprints[index];
     const rawId = `raw:${fingerprint}`;
     const normalized = normalizeProcurementRecord(record, fiscalYear);
     if (normalized.error) {
@@ -538,12 +555,12 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
       continue;
     }
 
-    const exists = await env.DB.prepare("SELECT id FROM raw_records WHERE id = ?").bind(rawId).first();
-    if (exists) {
+    if (seen.has(rawId)) {
       duplicateCount += 1;
       continue;
     }
     acceptedCount += 1;
+    seen.add(rawId);
     const project = normalized.project;
     const contract = normalized.contract;
     const projectId = `project:${await sha256Hex(projectNaturalIdentity(project, fiscalYear, fingerprint))}`;
@@ -568,7 +585,7 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
            reference_price_sat = COALESCE(excluded.reference_price_sat, projects.reference_price_sat),
            last_seen_at = excluded.last_seen_at`,
       ).bind(projectId, project.projectCode, project.title, project.description, project.agencyName, project.departmentName,
-        normalized.locationMatch?.province ?? null, fiscalYear, project.announcementDateRaw, project.announcementDateIso,
+        normalized.locationMatch?.province ?? project.sourceProvince ?? null, fiscalYear, project.announcementDateRaw, project.announcementDateIso,
         project.budgetSat, project.referencePriceSat, null, observedAt, observedAt, rawId),
     );
 
@@ -606,20 +623,23 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
     }
     if (normalized.productMatch) statements.push(env.DB.prepare(
       `INSERT OR IGNORE INTO product_matches (id, project_id, category, subcategory, confidence, match_reason, rules_version, decision_status)
-       VALUES (?, ?, ?, ?, ?, ?, 'v2', ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, 'v2', COALESCE((SELECT CASE decision WHEN 'approve' THEN 'approved' WHEN 'reject' THEN 'rejected' END FROM review_decisions WHERE project_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1), ?))`,
     ).bind(`product:${fingerprint}`, projectId, normalized.productMatch.category, normalized.productMatch.subcategory, normalized.productMatch.confidence,
-      normalized.productMatch.reason, normalized.productMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
+      normalized.productMatch.reason, projectId, normalized.productMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
     if (normalized.locationMatch) statements.push(env.DB.prepare(
       `INSERT OR IGNORE INTO location_matches (id, project_id, province, confidence, match_reason, decision_status)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, COALESCE((SELECT CASE decision WHEN 'approve' THEN 'approved' WHEN 'reject' THEN 'rejected' END FROM review_decisions WHERE project_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1), ?))`,
     ).bind(`location:${fingerprint}`, projectId, normalized.locationMatch.province, normalized.locationMatch.confidence,
-      normalized.locationMatch.reason, normalized.locationMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
+      normalized.locationMatch.reason, projectId, normalized.locationMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
   }
-  if (statements.length) await env.DB.batch(statements);
-  await env.DB.prepare(
+  statements.push(env.DB.prepare(
     `UPDATE sync_runs SET source_count = source_count + ?, accepted_count = accepted_count + ?,
        duplicate_count = duplicate_count + ?, quarantine_count = quarantine_count + ? WHERE id = ?`,
-  ).bind(records.length, acceptedCount, duplicateCount, quarantineCount, runId).run();
+  ).bind(records.length, acceptedCount, duplicateCount, quarantineCount, runId));
+  if (batchId) statements.push(env.DB.prepare(
+    'INSERT INTO normalization_batches (id, run_id, row_start, row_count, payload_checksum, accepted_count, duplicate_count, quarantine_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+  ).bind(batchId, runId, rowStart, records.length, payloadChecksum, acceptedCount, duplicateCount, quarantineCount));
+  await env.DB.batch(statements);
   return { sourceCount: records.length, acceptedCount, duplicateCount, quarantineCount };
 }
 
@@ -919,6 +939,24 @@ export default {
       }
     }
 
+    if (request.method === 'POST' && url.pathname === '/internal/complete-normalization') {
+      if (!await secureTokenEqual(request.headers.get('authorization')?.replace(/^Bearer\s+/i, ''), env.INGESTION_CONTROL_TOKEN)) return Response.json({ error: 'unauthorized' }, { status: 401 });
+      try {
+        const { runId, rowCount, totalBytes } = await request.json();
+        assertInteger(rowCount, 'rowCount');
+        assertInteger(totalBytes, 'totalBytes');
+        const run = await env.DB.prepare('SELECT * FROM sync_runs WHERE id = ?').bind(runId).first();
+        if (!run || run.status !== 'succeeded' || run.total_bytes !== totalBytes || run.source_count !== run.accepted_count + run.duplicate_count + run.quarantine_count) throw new Error('capture_or_accounting_incomplete');
+        const errors = await env.DB.prepare('SELECT COUNT(*) AS count FROM ingestion_errors WHERE sync_run_id = ? AND resolved_at IS NULL').bind(runId).first();
+        if (errors.count) throw new Error('unresolved_quarantine');
+        if (!await hasCompleteBatchCoverage(env.DB, runId, rowCount)) {
+          return Response.json({ error: 'normalization_ledger_incomplete', replayRequired: true }, { status: 409 });
+        }
+        await env.DB.prepare('UPDATE sync_runs SET normalized_at = ?, normalized_source_rows = ? WHERE id = ?').bind(new Date().toISOString(), rowCount, runId).run();
+        return Response.json({ completed: true, sourceRows: rowCount });
+      } catch { return Response.json({ error: 'normalization_not_complete' }, { status: 409 }); }
+    }
+
     if (request.method === "POST" && url.pathname === "/internal/fail-capture") {
       const authorized = await secureTokenEqual(
         request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
@@ -946,8 +984,9 @@ export default {
         `SELECT sync_runs.id, sync_runs.status, sync_runs.checkpoint, sync_runs.total_bytes, sync_runs.started_at, sync_runs.finished_at
            FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
           WHERE sr.external_id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'
+            AND COALESCE(sr.source_last_modified, sr.checksum, 'unknown') = ?
           ORDER BY sync_runs.started_at DESC LIMIT 1`,
-      ).bind(resourceId, fiscalYear).first();
+      ).bind(resourceId, fiscalYear, url.searchParams.get('sourceVersion') ?? 'unknown').first();
       return Response.json({ capture: capture ?? null });
     }
 

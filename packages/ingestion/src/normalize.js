@@ -10,14 +10,14 @@ const ISAN_PROVINCES = new Set([
 ]);
 
 const CATEGORY_RULES = [
-  { category: "เครื่องพิมพ์", include: [/เครื่องพิมพ์|printer|multifunction|มัลติฟังก์ชัน|หมึกพิมพ์|ตลับหมึก/i], exclude: [], subcategories: [
+  { category: "เครื่องพิมพ์", include: [/เครื่องพิมพ์|เครื่องถ่ายเอกสาร|printer|multifunction|มัลติฟังก์ชัน|หมึกพิมพ์|ตลับหมึก|\btoner\b/i], exclude: [], subcategories: [
     ["ซ่อมและบำรุงรักษา", /ซ่อม|บำรุงรักษา|maintenance/i], ["เช่าเครื่องพิมพ์", /เช่า|rent/i],
     ["หมึกและวัสดุสิ้นเปลือง", /หมึก|ตลับหมึก|toner|drum|ribbon/i], ["ตัวเครื่องและมัลติฟังก์ชัน", /./],
   ] },
   { category: "จอ LED", include: [/จอ\s*led|led\s*(display|screen|wall)|video\s*wall|ป้ายดิจิทัล/i], exclude: [/ไฟถนน|หลอดไฟ|โคมไฟ/i], subcategories: [
     ["Video Wall", /video\s*wall/i], ["ป้ายดิจิทัล", /ป้ายดิจิทัล|digital\s*signage/i], ["จอ LED", /./],
   ] },
-  { category: "จอ Interactive", include: [/interactive|กระดานอัจฉริยะ|จออัจฉริยะ|smart\s*board/i], exclude: [], subcategories: [
+  { category: "จอ Interactive", include: [/interactive.*(จอ|display|board|panel)|(?:จอ|display|board|panel).*interactive|กระดานอัจฉริยะ|จออัจฉริยะ|smart\s*board/i], exclude: [], subcategories: [
     ["ห้องเรียนอัจฉริยะ", /ห้องเรียน|classroom/i], ["กระดานอัจฉริยะ", /กระดาน|smart\s*board/i], ["จอ Interactive", /./],
   ] },
   { category: "ระบบเสียงและแสง", include: [/ระบบเสียง|ระบบแสง|sound\s*system|lighting\s*system/i], exclude: [/เช่า.*(เวที|เครื่องเสียง|แสง)|รับจ้าง.*อีเวนต์/i], subcategories: [
@@ -34,7 +34,7 @@ const FIELD_ALIASES = {
   title: ["project_name", "ชื่อโครงการ", "ชื่อโครงการจัดซื้อจัดจ้าง"],
   description: ["project_description", "รายละเอียดโครงการ", "รายละเอียด"],
   agency: ["agency_name", "ชื่อหน่วยงาน", "หน่วยงาน"],
-  department: ["department_name", "หน่วยงานย่อย", "กรม"],
+  department: ["department_name", "ชื่อหน่วยงานย่อย", "หน่วยงานย่อย", "กรม"],
   province: ["province", "จังหวัด"],
   announcementDate: ["announce_date", "วันที่ประกาศ", "วันที่ประกาศผล"],
   budget: ["budget", "งบประมาณ", "งบประมาณ(บาท)", "project_budget"],
@@ -61,8 +61,8 @@ export function toSatang(value) {
   if (!text) return null;
   if (!/^\d+(\.\d+)?$/.test(text)) return null;
   const [whole, fraction = ""] = text.split(".");
-  const satang = Number(whole) * 100 + Number((fraction + "00").slice(0, 2));
-  return Number.isSafeInteger(satang) ? satang : null;
+  const satang = BigInt(whole) * 100n + BigInt((fraction + "00").slice(0, 2));
+  return satang <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(satang) : null;
 }
 
 function validIsoDate(year, month, day) {
@@ -72,6 +72,11 @@ function validIsoDate(year, month, day) {
 
 export function thaiDateToIso(value) {
   const text = normalizeText(value).replace(/\//g, "-");
+  const iso = /^(\d{4})-(\d{2})-(\d{2})(?:T.*)?$/.exec(text);
+  if (iso) {
+    const year = Number(iso[1]) > 2400 ? Number(iso[1]) - 543 : Number(iso[1]);
+    return validIsoDate(year, Number(iso[2]), Number(iso[3])) ? `${year}-${iso[2]}-${iso[3]}` : null;
+  }
   const thaiMonthMatch = /^(\d{1,2})\s+([^\s]+)\s+(\d{2,4})$/.exec(text);
   if (thaiMonthMatch && THAI_MONTHS.has(thaiMonthMatch[2])) {
     const [, day, thaiMonth, year] = thaiMonthMatch;
@@ -114,7 +119,7 @@ export function classifyProduct(title, description) {
 export function locateIsan(record) {
   const province = normalizeText(field(record, FIELD_ALIASES.province));
   if (ISAN_PROVINCES.has(province)) return { province, confidence: 1, reason: "province_field" };
-  const text = `${normalizeText(field(record, FIELD_ALIASES.title))} ${normalizeText(field(record, FIELD_ALIASES.description))} ${normalizeText(field(record, FIELD_ALIASES.agency))}`;
+  const text = `${normalizeText(field(record, FIELD_ALIASES.title))} ${normalizeText(field(record, FIELD_ALIASES.description))} ${normalizeText(field(record, FIELD_ALIASES.agency))} ${normalizeText(field(record, FIELD_ALIASES.department))}`;
   const found = [...ISAN_PROVINCES].find((candidate) => text.includes(candidate));
   return found ? { province: found, confidence: 0.65, reason: "text_reference" } : null;
 }
@@ -133,6 +138,7 @@ export function normalizeProcurementRecord(record, fiscalYear) {
       title, description,
       agencyName: normalizeText(field(record, FIELD_ALIASES.agency)) || null,
       departmentName: normalizeText(field(record, FIELD_ALIASES.department)) || null,
+      sourceProvince: normalizeText(field(record, FIELD_ALIASES.province)) || null,
       fiscalYear,
       announcementDateRaw: normalizeText(field(record, FIELD_ALIASES.announcementDate)) || null,
       announcementDateIso: thaiDateToIso(field(record, FIELD_ALIASES.announcementDate)),

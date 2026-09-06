@@ -31,14 +31,39 @@ if ([string]::IsNullOrWhiteSpace($env:FISCAL_YEARS)) { $env:FISCAL_YEARS = '2565
 $env:LOCAL_UPLOAD = '1'
 $env:DIRECT_R2 = '1'
 $env:CAPTURE_BYTES = '8388608'
-$env:MAX_CHUNKS = '8'
+$env:MAX_CHUNKS = '4'
 $env:RESOURCE_LIMIT = '1'
 $env:CHUNK_DELAY_MS = '15000'
 $deadline = (Get-Date).AddMinutes($WindowMinutes)
 
+# Leave headroom below D1's per-database limit. Raw R2 capture can continue while
+# the normalized database layout is expanded; never fill D1 blindly.
+$normalizationAllowed = $false
+try {
+  $capacityJson = node node_modules/wrangler/bin/wrangler.js d1 info bit-gov-v2-staging --config apps/ingestion-worker/wrangler.toml --json
+  if ($LASTEXITCODE -ne 0) { throw 'D1 capacity query failed' }
+  $capacity = ($capacityJson -join "`n") | ConvertFrom-Json
+  if ($null -eq $capacity.database_size) { throw 'D1 capacity response missing size' }
+  $normalizationAllowed = [long]$capacity.database_size -lt 8000000000
+  if (-not $normalizationAllowed) { Write-Warning 'Normalization deferred at 8 GB safety threshold; raw R2 capture continues. Database partitioning is required.' }
+} catch { Write-Warning 'Cannot verify D1 capacity; deferring normalization this slice, continuing raw capture.' }
+
+$catalogStamp = Join-Path $root '.bit-gov-catalog-check-date'
+$today = Get-Date -Format 'yyyy-MM-dd'
+if (-not (Test-Path -LiteralPath $catalogStamp) -or (Get-Content -LiteralPath $catalogStamp -Raw).Trim() -ne $today) {
+  $env:DISCOVERY_ONLY = '1'
+  try {
+    node scripts/seed-catalog.mjs
+    if ($LASTEXITCODE -ne 0) { Write-Warning 'Daily catalog check failed; captured files can still be normalized.' }
+    else { Set-Content -LiteralPath $catalogStamp -Value $today }
+  } finally { Remove-Item Env:DISCOVERY_ONLY -ErrorAction SilentlyContinue }
+}
+
 function Invoke-NormalizationSlice {
+  if (-not $normalizationAllowed) { return $true }
   $env:NORMALIZE_BATCH_SIZE = '100'
   $env:NORMALIZE_MAX_ROWS = [string]$NormalizeMaxRows
+  $env:NORMALIZE_MAX_MILLISECONDS = '90000'
   $env:NORMALIZE_INPUT = 'r2'
   node scripts/normalize-next-capture.mjs
   if ($LASTEXITCODE -eq 75) {
