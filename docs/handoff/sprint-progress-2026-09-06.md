@@ -31,11 +31,11 @@ Resources by FY: 2565=10, 2566=12, 2567=11, 2568=10. FY2569 latest successful ex
 
 At 11:35 UTC: 50,267 projects, D1 size 200,159,232 bytes. Local first-file checkpoint subsequently reached 58,000 rows. Two complete raw files are in R2 and a third is in progress. Counts change as the scheduled worker runs.
 
-## Critical next step: capacity, before full ingestion
+## Capacity migration in progress
 
 `node scripts/check-capacity.mjs` estimated roughly 67 GB from a very early two-file sample. This is not an exact forecast: file schemas, deduplication and sizes vary, and checkpoint replay distorts the estimate. It does show that assuming all data fits a single 10 GB D1 database is unsafe.
 
-Plan a partitioned normalized store (likely per resource/time partition, with a shared catalog and supplier index), or evaluate a larger database service. Preserve R2 objects and current checkpoints. Do not silently reduce source scope to make one D1 fit. Cross-partition project deduplication, roll-up counts, pagination and exports need tests before migration. No extra databases or paid services have been provisioned for this design yet.
+Sixteen APAC staging D1 shards are provisioned and migrated. The staging ingestion Worker has all bindings and routes source data deterministically by resource ID. The initial FY2568 rehydrated source is writing to its routed shard; raw R2 capture remains continuous. Preserve R2 objects and checkpoints. Do not silently reduce source scope to make one D1 fit. Cross-partition project deduplication, roll-up counts, pagination and exports still need tests before migration/cutover.
 
 ## Remaining work in order
 

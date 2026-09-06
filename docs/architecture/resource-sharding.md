@@ -28,3 +28,9 @@ All versions of a resource route to the same shard. A resource is never split be
 ## Non-goals for the first migration commit
 
 This document and routing module do not claim the cross-shard API has shipped. They establish the durable routing contract and stop the old single D1 from growing while the control/index and cross-shard write path are implemented.
+
+## Staging evidence — 2026-09-06
+
+Sixteen APAC staging D1 shards (`DATA_SHARD_00` through `DATA_SHARD_15`) were provisioned and migrated through `0006_source_version_and_shard_registry.sql`. The ingestion staging Worker was redeployed with all shard bindings and `SHARDING_ENABLED=1`.
+
+The first rehydrated FY2568 CSV routed to `DATA_SHARD_05`; its first observed shard batch recorded 2,200 source/accepted rows and 1,916 projects. The control database retained zero normalized rows for that in-progress run, as intended: it receives the accounting summary only when the shard's complete row ledger passes. This is an ingestion-path check, not a data-completeness claim.

@@ -7,6 +7,7 @@ import {
 } from "../../../packages/ingestion/src/index.js";
 
 import { hasCompleteBatchCoverage } from './normalization-proof.js';
+import { shardBinding } from '../../../packages/ingestion/src/sharding.js';
 
 const SOURCE_ID = "data-go-th-ckan";
 // 8 MiB timed out through the authenticated Worker path in staging; 1 MiB was verified end-to-end.
@@ -141,13 +142,14 @@ async function handleCatalogSync(message, env) {
       await env.DB.batch([
         env.DB.prepare(
           `INSERT INTO source_resources
-             (id, source_id, external_id, fiscal_year, resource_url, source_last_modified,
+             (id, source_id, external_id, fiscal_year, resource_url, source_last_modified, data_shard,
               checksum, schema_fingerprint, first_seen_at, last_seen_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
            ON CONFLICT(source_id, external_id) DO UPDATE SET
              fiscal_year = excluded.fiscal_year,
              resource_url = excluded.resource_url,
              source_last_modified = excluded.source_last_modified,
+             data_shard = excluded.data_shard,
              checksum = excluded.checksum,
              last_seen_at = excluded.last_seen_at`,
         ).bind(
@@ -157,16 +159,17 @@ async function handleCatalogSync(message, env) {
           fiscalYear,
           resource.url ?? null,
           resource.last_modified ?? null,
+          shardBinding(resource.id),
           resource.hash || null,
           now,
           now,
         ),
         env.DB.prepare(
           `INSERT INTO sync_runs
-             (id, resource_id, run_type, status, started_at,
+             (id, resource_id, run_type, status, started_at, source_version,
               source_count, accepted_count, duplicate_count, quarantine_count, checkpoint)
-           VALUES (?, ?, ?, 'running', ?, 0, 0, 0, 0, '0')`,
-        ).bind(runId, resourceDbId, message.testMode ? "smoke_capture" : "raw_capture", now),
+           VALUES (?, ?, ?, 'running', ?, ?, 0, 0, 0, 0, '0')`,
+        ).bind(runId, resourceDbId, message.testMode ? "smoke_capture" : "raw_capture", now, sourceVersion),
       ]);
 
       await env.INGESTION_QUEUE.send({
@@ -203,19 +206,19 @@ async function seedCatalogResource({ fiscalYear, resource, testMode = false, chu
     ).bind(SOURCE_ID, "Data.go.th CKAN", "https://opend.data.go.th/get-ckan", now),
     env.DB.prepare(
       `INSERT INTO source_resources
-         (id, source_id, external_id, fiscal_year, resource_url, source_last_modified,
+         (id, source_id, external_id, fiscal_year, resource_url, source_last_modified, data_shard,
           checksum, schema_fingerprint, first_seen_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
        ON CONFLICT(source_id, external_id) DO UPDATE SET
          fiscal_year = excluded.fiscal_year, resource_url = excluded.resource_url,
-         source_last_modified = excluded.source_last_modified, checksum = excluded.checksum,
+         source_last_modified = excluded.source_last_modified, data_shard = excluded.data_shard, checksum = excluded.checksum,
          last_seen_at = excluded.last_seen_at`,
-    ).bind(resourceDbId, SOURCE_ID, resource.id, fiscalYear, resourceUrl, resource.last_modified ?? null, resource.hash || null, now, now),
+    ).bind(resourceDbId, SOURCE_ID, resource.id, fiscalYear, resourceUrl, resource.last_modified ?? null, shardBinding(resource.id), resource.hash || null, now, now),
     env.DB.prepare(
-      `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at,
+      `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at, source_version,
         source_count, accepted_count, duplicate_count, quarantine_count, checkpoint)
-       VALUES (?, ?, ?, 'running', ?, 0, 0, 0, 0, '0')`,
-    ).bind(runId, resourceDbId, testMode ? "smoke_capture" : localUpload ? "local_raw_capture" : "raw_capture", now),
+       VALUES (?, ?, ?, 'running', ?, ?, 0, 0, 0, 0, '0')`,
+    ).bind(runId, resourceDbId, testMode ? "smoke_capture" : localUpload ? "local_raw_capture" : "raw_capture", now, sourceVersion),
   ]);
   const captureMessage = {
     type: "capture_csv_range", runId, resourceDbId, resourceId: resource.id, resourceUrl,
@@ -313,11 +316,11 @@ async function confirmDirectCsvUpload(body, env) {
     throw new Error("Direct upload confirmation is missing required metadata");
   }
   const run = await env.DB.prepare(
-    `SELECT sr.external_id, sr.fiscal_year, sync_runs.checkpoint FROM sync_runs
+    `SELECT sr.external_id, sr.fiscal_year, sync_runs.checkpoint, sync_runs.source_version FROM sync_runs
       JOIN source_resources sr ON sr.id = sync_runs.resource_id
       WHERE sync_runs.id = ? AND sync_runs.run_type = 'local_raw_capture'`,
   ).bind(runId).first();
-  if (!run || run.external_id !== resourceId || run.fiscal_year !== fiscalYear) throw new Error("Direct upload does not match its capture run");
+  if (!run || run.external_id !== resourceId || run.fiscal_year !== fiscalYear || run.source_version !== sourceVersion) throw new Error("Direct upload does not match its capture run");
   const checkpoint = Number(run.checkpoint || 0);
   if (!Number.isSafeInteger(checkpoint) || rangeStart > checkpoint) throw new Error("Direct upload has a gap before its range");
   const key = csvChunkKey({ fiscalYear, resourceId, sourceVersion }, rangeStart, rangeEnd);
@@ -355,6 +358,52 @@ function parseContentRange(value) {
 function csvManifestKey({ fiscalYear, resourceId, sourceVersion }) {
   const version = String(sourceVersion).replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120);
   return `raw/source-csv/${fiscalYear}/${resourceId}/${version}/manifest.json`;
+}
+
+function dataDbForResource(env, resourceId) {
+  if (env.SHARDING_ENABLED !== '1') return env.DB;
+  const binding = shardBinding(resourceId);
+  const db = env[binding];
+  if (!db) throw new Error(`Data shard binding is missing: ${binding}`);
+  return db;
+}
+
+async function mirrorRunToDataShard(controlDb, dataDb, runId) {
+  const record = await controlDb.prepare(`SELECT
+    r.id AS run_id, r.run_type, r.status, r.started_at, r.finished_at, r.source_count,
+    r.accepted_count, r.duplicate_count, r.quarantine_count, r.checkpoint, r.error_summary,
+    r.total_bytes, r.normalized_at, r.normalized_source_rows, r.source_version,
+    sr.id AS resource_db_id, sr.source_id, sr.external_id, sr.fiscal_year, sr.resource_url,
+    sr.source_last_modified, sr.data_shard, sr.checksum, sr.schema_fingerprint,
+    sr.first_seen_at, sr.last_seen_at, s.name AS source_name, s.source_type, s.base_url,
+    s.enabled AS source_enabled, s.created_at AS source_created_at
+    FROM sync_runs r
+    JOIN source_resources sr ON sr.id = r.resource_id
+    JOIN sources s ON s.id = sr.source_id
+    WHERE r.id = ?`).bind(runId).first();
+  if (!record) throw new Error('Control capture run is missing');
+  await dataDb.batch([
+    dataDb.prepare(`INSERT INTO sources (id,name,source_type,base_url,enabled,created_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET enabled=excluded.enabled`).bind(
+      record.source_id, record.source_name, record.source_type, record.base_url, record.source_enabled, record.source_created_at),
+    dataDb.prepare(`INSERT INTO source_resources
+      (id,source_id,external_id,fiscal_year,resource_url,source_last_modified,data_shard,checksum,schema_fingerprint,first_seen_at,last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET resource_url=excluded.resource_url, source_last_modified=excluded.source_last_modified,
+        data_shard=excluded.data_shard, checksum=excluded.checksum, last_seen_at=excluded.last_seen_at`).bind(
+      record.resource_db_id, record.source_id, record.external_id, record.fiscal_year, record.resource_url,
+      record.source_last_modified, record.data_shard, record.checksum, record.schema_fingerprint,
+      record.first_seen_at, record.last_seen_at),
+    dataDb.prepare(`INSERT INTO sync_runs
+      (id,resource_id,run_type,status,started_at,finished_at,source_count,accepted_count,duplicate_count,quarantine_count,checkpoint,error_summary,total_bytes,normalized_at,normalized_source_rows,source_version)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO NOTHING`).bind(
+      record.run_id, record.resource_db_id, record.run_type, record.status, record.started_at, record.finished_at,
+      record.source_count, record.accepted_count, record.duplicate_count, record.quarantine_count,
+      record.checkpoint, record.error_summary, record.total_bytes, record.normalized_at,
+      record.normalized_source_rows, record.source_version),
+  ]);
+  return record;
 }
 
 function rawChunkRange(key) {
@@ -419,19 +468,19 @@ async function rehydrateRawCapture(body, env) {
     ).bind(SOURCE_ID, "Data.go.th CKAN", "https://opend.data.go.th/get-ckan", now),
     env.DB.prepare(
       `INSERT INTO source_resources
-         (id, source_id, external_id, fiscal_year, resource_url, source_last_modified,
+         (id, source_id, external_id, fiscal_year, resource_url, source_last_modified, data_shard,
           checksum, schema_fingerprint, first_seen_at, last_seen_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
        ON CONFLICT(source_id, external_id) DO UPDATE SET
          fiscal_year = excluded.fiscal_year, resource_url = excluded.resource_url,
-         source_last_modified = excluded.source_last_modified, checksum = excluded.checksum,
+         source_last_modified = excluded.source_last_modified, data_shard = excluded.data_shard, checksum = excluded.checksum,
          last_seen_at = excluded.last_seen_at`,
-    ).bind(resourceDbId, SOURCE_ID, resource.id, fiscalYear, resourceUrl, resource.last_modified ?? null, resource.hash || null, now, now),
+    ).bind(resourceDbId, SOURCE_ID, resource.id, fiscalYear, resourceUrl, resource.last_modified ?? null, shardBinding(resource.id), resource.hash || null, now, now),
     env.DB.prepare(
-      `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at, finished_at,
+      `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at, finished_at, source_version,
         source_count, accepted_count, duplicate_count, quarantine_count, checkpoint, total_bytes)
-       VALUES (?, ?, 'local_raw_capture', 'succeeded', ?, ?, 0, 0, 0, 0, ?, ?)`,
-    ).bind(runId, resourceDbId, now, now, String(manifest.totalBytes), manifest.totalBytes),
+       VALUES (?, ?, 'local_raw_capture', 'succeeded', ?, ?, ?, 0, 0, 0, 0, ?, ?)`,
+    ).bind(runId, resourceDbId, now, now, sourceVersion, String(manifest.totalBytes), manifest.totalBytes),
   ]);
   return { runId, fiscalYear, resourceId: resource.id, sourceVersion, totalBytes: manifest.totalBytes, chunks: manifest.chunks.length };
 }
@@ -439,8 +488,8 @@ async function rehydrateRawCapture(body, env) {
 async function handleCaptureCsvRange(message, env) {
   assertInteger(message.rangeStart, "rangeStart");
   assertInteger(message.chunkBytes, "chunkBytes", { min: 1, max: DEFAULT_CSV_CHUNK_BYTES });
-  const run = await env.DB.prepare("SELECT status FROM sync_runs WHERE id = ?").bind(message.runId).first();
-  if (!run || run.status !== "running") {
+  const run = await env.DB.prepare("SELECT status, source_version FROM sync_runs WHERE id = ?").bind(message.runId).first();
+  if (!run || run.status !== "running" || run.source_version !== message.sourceVersion) {
     return { skipped: true, reason: run ? `run_${run.status}` : "run_not_found" };
   }
   const rangeEnd = message.rangeStart + message.chunkBytes - 1;
@@ -508,16 +557,18 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
   const resourceDbId = `ckan:${resourceId}`;
   const run = await env.DB.prepare(
     `SELECT sync_runs.id FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
-      WHERE sync_runs.id = ? AND sr.id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'`,
-  ).bind(runId, resourceDbId, fiscalYear).first();
+      WHERE sync_runs.id = ? AND sr.id = ? AND sr.fiscal_year = ? AND sync_runs.source_version = ? AND sync_runs.run_type = 'local_raw_capture'`,
+  ).bind(runId, resourceDbId, fiscalYear, sourceVersion).first();
   if (!run) throw new Error("Normalized records do not match an approved raw capture run");
+  const dataDb = dataDbForResource(env, resourceId);
+  if (dataDb !== env.DB) await mirrorRunToDataShard(env.DB, dataDb, runId);
   let batchId = null;
   let payloadChecksum = null;
   if (rowStart !== undefined) {
     assertInteger(rowStart, 'rowStart');
     batchId = `${runId}:${rowStart}`;
     payloadChecksum = await sha256Hex(JSON.stringify(records));
-    const previous = await env.DB.prepare('SELECT * FROM normalization_batches WHERE id = ?').bind(batchId).first();
+    const previous = await dataDb.prepare('SELECT * FROM normalization_batches WHERE id = ?').bind(batchId).first();
     if (previous) {
       if (previous.payload_checksum !== payloadChecksum) throw new Error('batch_payload_changed');
       return { sourceCount: previous.row_count, acceptedCount: previous.accepted_count, duplicateCount: previous.duplicate_count, quarantineCount: previous.quarantine_count };
@@ -535,7 +586,7 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
   let quarantineCount = 0;
 
   const fingerprints = await Promise.all(records.map(record => fingerprintRecord(resourceId, record)));
-  const seen = await existingRawRecordIds(env.DB, fingerprints.map(fingerprint => `raw:${fingerprint}`));
+  const seen = await existingRawRecordIds(dataDb, fingerprints.map(fingerprint => `raw:${fingerprint}`));
   for (let index = 0; index < records.length; index++) {
     const record = records[index];
     const fingerprint = fingerprints[index];
@@ -543,7 +594,7 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
     const normalized = normalizeProcurementRecord(record, fiscalYear);
     if (normalized.error) {
       quarantineCount += 1;
-      statements.push(env.DB.prepare(
+      statements.push(dataDb.prepare(
         `INSERT INTO ingestion_errors (id, sync_run_id, resource_id, source_record_id, fingerprint, stage, reason_code, detail, created_at)
          VALUES (?, ?, ?, ?, ?, 'normalize', ?, NULL, ?)
          ON CONFLICT(id) DO UPDATE SET
@@ -565,11 +616,11 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
     const contract = normalized.contract;
     const projectId = `project:${await sha256Hex(projectNaturalIdentity(project, fiscalYear, fingerprint))}`;
     statements.push(
-      env.DB.prepare(
+      dataDb.prepare(
         `INSERT INTO raw_records (id, resource_id, sync_run_id, source_record_id, fingerprint, r2_object_key, payload_checksum, observed_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).bind(rawId, resourceDbId, runId, String(record._id ?? record["ลำดับ"] ?? ""), fingerprint, r2ObjectKey, fingerprint, observedAt),
-      env.DB.prepare(
+      dataDb.prepare(
         `INSERT INTO projects (id, project_code, title, description, agency_name, department_name, province, fiscal_year,
           announcement_date_raw, announcement_date_iso, budget_sat, reference_price_sat, source_url, first_seen_at, last_seen_at, raw_record_id)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -591,7 +642,7 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
 
     const hasContract = contract.contractNumber || contract.contractDateRaw || contract.winningPriceSat !== null;
     const contractId = hasContract ? `contract:${await sha256Hex(contractNaturalIdentity(projectId, contract, fingerprint))}` : null;
-    if (contractId) statements.push(env.DB.prepare(
+    if (contractId) statements.push(dataDb.prepare(
       `INSERT INTO contracts (id, project_id, contract_number, contract_date_raw, contract_date_iso, agreed_price_sat,
         contract_price_sat, winning_price_sat, winning_price_source, source_url, raw_record_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
@@ -608,10 +659,10 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
     if (normalized.supplier) {
       const supplierId = `supplier:${await sha256Hex(supplierNaturalIdentity(normalized.supplier))}`;
       statements.push(
-        env.DB.prepare(
+        dataDb.prepare(
           `INSERT OR IGNORE INTO suppliers (id, tax_id, name, normalized_name, province) VALUES (?, ?, ?, ?, NULL)`,
         ).bind(supplierId, normalized.supplier.taxId, normalized.supplier.name, normalized.supplier.normalizedName),
-        env.DB.prepare(
+        dataDb.prepare(
           `INSERT OR IGNORE INTO awards (id, project_id, contract_id, supplier_id, award_date_raw, award_date_iso, winning_price_sat, raw_record_id)
            VALUES (?, ?, ?, COALESCE(
              (SELECT id FROM suppliers WHERE tax_id = ? OR normalized_name = ? LIMIT 1), ?
@@ -621,25 +672,25 @@ export async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, s
           contract.winningPriceSat, rawId),
       );
     }
-    if (normalized.productMatch) statements.push(env.DB.prepare(
+    if (normalized.productMatch) statements.push(dataDb.prepare(
       `INSERT OR IGNORE INTO product_matches (id, project_id, category, subcategory, confidence, match_reason, rules_version, decision_status)
        VALUES (?, ?, ?, ?, ?, ?, 'v2', COALESCE((SELECT CASE decision WHEN 'approve' THEN 'approved' WHEN 'reject' THEN 'rejected' END FROM review_decisions WHERE project_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1), ?))`,
     ).bind(`product:${fingerprint}`, projectId, normalized.productMatch.category, normalized.productMatch.subcategory, normalized.productMatch.confidence,
       normalized.productMatch.reason, projectId, normalized.productMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
-    if (normalized.locationMatch) statements.push(env.DB.prepare(
+    if (normalized.locationMatch) statements.push(dataDb.prepare(
       `INSERT OR IGNORE INTO location_matches (id, project_id, province, confidence, match_reason, decision_status)
        VALUES (?, ?, ?, ?, ?, COALESCE((SELECT CASE decision WHEN 'approve' THEN 'approved' WHEN 'reject' THEN 'rejected' END FROM review_decisions WHERE project_id = ? ORDER BY decided_at DESC, rowid DESC LIMIT 1), ?))`,
     ).bind(`location:${fingerprint}`, projectId, normalized.locationMatch.province, normalized.locationMatch.confidence,
       normalized.locationMatch.reason, projectId, normalized.locationMatch.confidence >= 0.8 ? "auto_approved" : "pending_review"));
   }
-  statements.push(env.DB.prepare(
+  statements.push(dataDb.prepare(
     `UPDATE sync_runs SET source_count = source_count + ?, accepted_count = accepted_count + ?,
        duplicate_count = duplicate_count + ?, quarantine_count = quarantine_count + ? WHERE id = ?`,
   ).bind(records.length, acceptedCount, duplicateCount, quarantineCount, runId));
-  if (batchId) statements.push(env.DB.prepare(
+  if (batchId) statements.push(dataDb.prepare(
     'INSERT INTO normalization_batches (id, run_id, row_start, row_count, payload_checksum, accepted_count, duplicate_count, quarantine_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
   ).bind(batchId, runId, rowStart, records.length, payloadChecksum, acceptedCount, duplicateCount, quarantineCount));
-  await env.DB.batch(statements);
+  await dataDb.batch(statements);
   return { sourceCount: records.length, acceptedCount, duplicateCount, quarantineCount };
 }
 
@@ -945,14 +996,25 @@ export default {
         const { runId, rowCount, totalBytes } = await request.json();
         assertInteger(rowCount, 'rowCount');
         assertInteger(totalBytes, 'totalBytes');
-        const run = await env.DB.prepare('SELECT * FROM sync_runs WHERE id = ?').bind(runId).first();
-        if (!run || run.status !== 'succeeded' || run.total_bytes !== totalBytes || run.source_count !== run.accepted_count + run.duplicate_count + run.quarantine_count) throw new Error('capture_or_accounting_incomplete');
-        const errors = await env.DB.prepare('SELECT COUNT(*) AS count FROM ingestion_errors WHERE sync_run_id = ? AND resolved_at IS NULL').bind(runId).first();
+        const controlRun = await env.DB.prepare(`SELECT r.*, sr.external_id
+          FROM sync_runs r JOIN source_resources sr ON sr.id = r.resource_id WHERE r.id = ?`).bind(runId).first();
+        if (!controlRun || controlRun.status !== 'succeeded' || controlRun.total_bytes !== totalBytes) throw new Error('capture_incomplete');
+        const dataDb = dataDbForResource(env, controlRun.external_id);
+        if (dataDb !== env.DB) await mirrorRunToDataShard(env.DB, dataDb, runId);
+        const run = dataDb === env.DB ? controlRun : await dataDb.prepare('SELECT * FROM sync_runs WHERE id = ?').bind(runId).first();
+        if (!run || run.source_count !== run.accepted_count + run.duplicate_count + run.quarantine_count) throw new Error('normalization_accounting_incomplete');
+        const errors = await dataDb.prepare('SELECT COUNT(*) AS count FROM ingestion_errors WHERE sync_run_id = ? AND resolved_at IS NULL').bind(runId).first();
         if (errors.count) throw new Error('unresolved_quarantine');
-        if (!await hasCompleteBatchCoverage(env.DB, runId, rowCount)) {
+        if (!await hasCompleteBatchCoverage(dataDb, runId, rowCount)) {
           return Response.json({ error: 'normalization_ledger_incomplete', replayRequired: true }, { status: 409 });
         }
-        await env.DB.prepare('UPDATE sync_runs SET normalized_at = ?, normalized_source_rows = ? WHERE id = ?').bind(new Date().toISOString(), rowCount, runId).run();
+        const completedAt = new Date().toISOString();
+        await dataDb.prepare('UPDATE sync_runs SET normalized_at = ?, normalized_source_rows = ? WHERE id = ?').bind(completedAt, rowCount, runId).run();
+        if (dataDb !== env.DB) {
+          await env.DB.prepare(`UPDATE sync_runs SET source_count = ?, accepted_count = ?, duplicate_count = ?, quarantine_count = ?,
+            normalized_at = ?, normalized_source_rows = ? WHERE id = ?`).bind(
+            run.source_count, run.accepted_count, run.duplicate_count, run.quarantine_count, completedAt, rowCount, runId).run();
+        }
         return Response.json({ completed: true, sourceRows: rowCount });
       } catch { return Response.json({ error: 'normalization_not_complete' }, { status: 409 }); }
     }
@@ -984,7 +1046,7 @@ export default {
         `SELECT sync_runs.id, sync_runs.status, sync_runs.checkpoint, sync_runs.total_bytes, sync_runs.started_at, sync_runs.finished_at
            FROM sync_runs JOIN source_resources sr ON sr.id = sync_runs.resource_id
           WHERE sr.external_id = ? AND sr.fiscal_year = ? AND sync_runs.run_type = 'local_raw_capture'
-            AND COALESCE(sr.source_last_modified, sr.checksum, 'unknown') = ?
+            AND sync_runs.source_version = ?
           ORDER BY sync_runs.started_at DESC LIMIT 1`,
       ).bind(resourceId, fiscalYear, url.searchParams.get('sourceVersion') ?? 'unknown').first();
       return Response.json({ capture: capture ?? null });

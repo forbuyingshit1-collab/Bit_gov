@@ -8,6 +8,89 @@ database_name = "bit-gov-v2-staging"
 database_id = "57139692-e530-4f86-814f-95ea957dba18"
 migrations_dir = "../../packages/database/migrations"
 
+# Control database remains DB. Source-resource data is routed to one of these
+# shards by packages/ingestion/src/sharding.js; no production cutover yet.
+[[d1_databases]]
+binding = "DATA_SHARD_00"
+database_name = "bit-gov-data-shard-00-staging"
+database_id = "b171127a-3f13-466a-aa0a-4d46e700c551"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_01"
+database_name = "bit-gov-data-shard-01-staging"
+database_id = "c6379101-5199-4128-b5f9-026cfc4674e3"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_02"
+database_name = "bit-gov-data-shard-02-staging"
+database_id = "3cdc3494-7bc1-4109-a473-d9d213ae1a9b"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_03"
+database_name = "bit-gov-data-shard-03-staging"
+database_id = "ff59c43d-a38f-4a5d-8a54-9c0c5a074ce5"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_04"
+database_name = "bit-gov-data-shard-04-staging"
+database_id = "599fc48e-ac2e-492d-bb46-5e114b44f32c"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_05"
+database_name = "bit-gov-data-shard-05-staging"
+database_id = "b01c4642-593d-44ec-a440-2e20476d8902"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_06"
+database_name = "bit-gov-data-shard-06-staging"
+database_id = "0704131c-6066-4f5d-8357-e83b00791bb8"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_07"
+database_name = "bit-gov-data-shard-07-staging"
+database_id = "3a87c2b0-d636-48fc-8475-0cedc7a52746"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_08"
+database_name = "bit-gov-data-shard-08-staging"
+database_id = "0c096727-45cd-48eb-a1ec-44a811e678af"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_09"
+database_name = "bit-gov-data-shard-09-staging"
+database_id = "1bf31116-1c3c-4370-8e7e-5be3ea0e5915"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_10"
+database_name = "bit-gov-data-shard-10-staging"
+database_id = "e5f09e10-795a-423a-8c03-5a366742af92"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_11"
+database_name = "bit-gov-data-shard-11-staging"
+database_id = "1468d604-7439-4369-83fa-4a9d409d5bb1"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_12"
+database_name = "bit-gov-data-shard-12-staging"
+database_id = "4e3a14f3-3f18-4b80-87de-72f7d2f4e908"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_13"
+database_name = "bit-gov-data-shard-13-staging"
+database_id = "6f58ff62-afe4-447f-a073-b2b531509186"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_14"
+database_name = "bit-gov-data-shard-14-staging"
+database_id = "1b0992c4-703c-4bcf-a24c-3a0383f7575e"
+migrations_dir = "../../packages/database/migrations"
+[[d1_databases]]
+binding = "DATA_SHARD_15"
+database_name = "bit-gov-data-shard-15-staging"
+database_id = "56295085-7319-46a4-9e88-98b98156aa4a"
+migrations_dir = "../../packages/database/migrations"
+
 [[r2_buckets]]
 binding = "RAW_BUCKET"
 bucket_name = "bit-gov-raw-staging"
@@ -31,3 +114,4 @@ max_retries = 3
 [vars]
 APP_ENV = "staging"
 CATALOG_RELAY_URL = "https://bit-gov-dashboard-gamma.vercel.app/api/internal/catalog"
+SHARDING_ENABLED = "1"
