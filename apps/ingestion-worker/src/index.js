@@ -77,6 +77,33 @@ function assertInteger(value, name, { min = 0, max = Number.MAX_SAFE_INTEGER } =
   }
 }
 
+async function recordCatalogCoverage({ fiscalYear, coverageStatus, datasetId = null, resourceCount = 0, errorSummary = null }, env) {
+  assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+  if (!["available", "unavailable", "check_failed"].includes(coverageStatus)) {
+    throw new Error("coverage_status_invalid");
+  }
+  assertInteger(resourceCount, "resourceCount", { min: 0, max: 100000 });
+  const now = new Date().toISOString();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO sources (id, name, source_type, base_url, enabled, created_at)
+       VALUES (?, ?, 'ckan', ?, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET enabled = 1`,
+    ).bind(SOURCE_ID, "Data.go.th CKAN", "https://opend.data.go.th/get-ckan", now),
+    env.DB.prepare(
+      `INSERT INTO catalog_coverage
+         (source_id, fiscal_year, coverage_status, dataset_id, resource_count, checked_at, error_summary)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(source_id, fiscal_year) DO UPDATE SET
+         coverage_status = excluded.coverage_status,
+         dataset_id = excluded.dataset_id,
+         resource_count = excluded.resource_count,
+         checked_at = excluded.checked_at,
+         error_summary = excluded.error_summary`,
+    ).bind(SOURCE_ID, fiscalYear, coverageStatus, datasetId, resourceCount, now, errorSummary?.slice(0, 500) ?? null),
+  ]);
+}
+
 async function handleCatalogSync(message, env) {
   if (!Array.isArray(message.years) || message.years.length === 0) {
     throw new Error("catalog_sync requires at least one fiscal year");
@@ -776,6 +803,26 @@ export default {
       }
       const result = await seedCatalogResource(body, env);
       return Response.json({ queued: !body.direct, run_id: result.runId, capture: result.capture ?? null }, { status: 202 });
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/record-catalog-coverage") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        const body = await request.json();
+        await recordCatalogCoverage({
+          fiscalYear: body.fiscalYear,
+          coverageStatus: body.coverageStatus,
+          datasetId: typeof body.datasetId === "string" ? body.datasetId : null,
+          resourceCount: body.resourceCount ?? 0,
+          errorSummary: typeof body.errorSummary === "string" ? body.errorSummary : null,
+        }, env);
+        return Response.json({ recorded: true });
+      } catch (error) {
+        return Response.json({ error: "catalog_coverage_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
     }
 
     if (request.method === "POST" && url.pathname === "/internal/upload-csv-chunk") {

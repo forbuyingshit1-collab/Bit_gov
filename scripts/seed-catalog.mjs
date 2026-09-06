@@ -15,6 +15,7 @@ const maxChunks = Number(process.env.MAX_CHUNKS ?? 1);
 const chunkDelayMs = Number(process.env.CHUNK_DELAY_MS ?? 15000);
 const statePath = process.env.CAPTURE_STATE_PATH ?? ".bit-gov-capture-state.json";
 const completedStatePath = process.env.COMPLETED_CAPTURE_STATE_PATH ?? ".bit-gov-completed-captures.json";
+const discoveryOnly = process.env.DISCOVERY_ONLY === "1";
 
 if (!apiKey || !controlToken || !workerUrl || years.length !== 2 || years.some((year) => !Number.isInteger(year))) {
   throw new Error("Set DATA_GO_TH_API_KEY, INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL and FISCAL_YEARS=2565:2569");
@@ -62,6 +63,15 @@ async function seed(payload) {
     if (response.status < 500 || attempt === 3) throw new Error(`worker seed returned HTTP ${response.status}`);
     await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
   }
+}
+
+async function recordCatalogCoverage(payload) {
+  const response = await fetch(`${workerUrl.replace(/\/$/, "")}/internal/record-catalog-coverage`, {
+    method: "POST",
+    headers: { authorization: `Bearer ${controlToken}`, "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) throw new Error(`catalog coverage returned HTTP ${response.status}`);
 }
 
 function parseContentRange(value) {
@@ -172,13 +182,39 @@ const fiscalYears = Array.from({ length: years[1] - years[0] + 1 }, (_, index) =
 
 catalog: for (const fiscalYear of fiscalYears) {
   const title = titleFor(fiscalYear);
-  const search = await ckan("package_search", { q: title, rows: 20 });
+  let search;
+  try {
+    search = await ckan("package_search", { q: title, rows: 20 });
+  } catch (error) {
+    await recordCatalogCoverage({ fiscalYear, coverageStatus: "check_failed", errorSummary: String(error) });
+    throw error;
+  }
   const dataset = (search.results ?? []).find((item) => item.title === title);
-  if (!dataset) { console.log(`${fiscalYear}: unavailable`); continue; }
-  const detail = await ckan("package_show", { id: dataset.id });
+  if (!dataset) {
+    await recordCatalogCoverage({ fiscalYear, coverageStatus: "unavailable" });
+    console.log(`${fiscalYear}: unavailable`);
+    continue;
+  }
+  let detail;
+  try {
+    detail = await ckan("package_show", { id: dataset.id });
+  } catch (error) {
+    await recordCatalogCoverage({ fiscalYear, coverageStatus: "check_failed", datasetId: dataset.id, errorSummary: String(error) });
+    throw error;
+  }
   const discoveredResources = (detail.resources ?? []).filter((resource) =>
     String(resource.format ?? "").toUpperCase() === "CSV" && resource.datastore_active === true && typeof resource.url === "string",
   );
+  await recordCatalogCoverage({
+    fiscalYear,
+    coverageStatus: "available",
+    datasetId: dataset.id,
+    resourceCount: discoveredResources.length,
+  });
+  if (discoveryOnly) {
+    console.log(`${fiscalYear}: discovered ${discoveredResources.length} resource(s)`);
+    continue;
+  }
   const resources = activeResourceId ? discoveredResources.filter((resource) => resource.id === activeResourceId) : discoveredResources;
   for (const resource of resources) {
     if (process.env.LOCAL_UPLOAD === "1") {
