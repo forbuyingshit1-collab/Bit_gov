@@ -9,7 +9,7 @@ function fixture() {
   const root = new URL('../../../packages/database/migrations/', import.meta.url);
   for (const file of readdirSync(root).sort()) sqlite.exec(readFileSync(new URL(file, root), 'utf8'));
   sqlite.exec(`INSERT INTO sources VALUES ('source','test','ckan',NULL,1,'2026-01-01');
-    INSERT INTO source_resources VALUES ('resource','source','resource',2568,NULL,NULL,NULL,NULL,'2026-01-01','2026-01-01');
+    INSERT INTO source_resources (id,source_id,external_id,fiscal_year,first_seen_at,last_seen_at) VALUES ('resource','source','resource',2568,'2026-01-01','2026-01-01');
     INSERT INTO sync_runs (id,resource_id,run_type,status,started_at) VALUES ('run','resource','local_raw_capture','running','2026-01-01');
     INSERT INTO raw_records VALUES ('raw','resource','run','1','fingerprint','raw/manifest','checksum','2026-01-01');
     INSERT INTO projects (id,title,province,fiscal_year,budget_sat,first_seen_at,last_seen_at,raw_record_id) VALUES ('project:1','เครื่องพิมพ์','ขอนแก่น',2568,10000,'2026-01-01','2026-01-01','raw');
