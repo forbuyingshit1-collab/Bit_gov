@@ -1,9 +1,12 @@
 param(
   [int]$WindowMinutes = 330,
-  [int]$PauseSeconds = 10
+  [int]$PauseSeconds = 10,
+  [int]$NormalizeMaxRows = 50000
 )
 
 $ErrorActionPreference = 'Stop'
+if ($WindowMinutes -lt 1) { throw 'WindowMinutes must be at least 1' }
+if ($NormalizeMaxRows -lt 1 -or $NormalizeMaxRows -gt 50000) { throw 'NormalizeMaxRows must be 1..50000' }
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 $logDirectory = Join-Path $root '.bit-gov-logs'
@@ -12,9 +15,11 @@ $logPath = Join-Path $logDirectory ("capture-{0}.log" -f (Get-Date -Format 'yyyy
 Get-ChildItem -LiteralPath $logDirectory -Filter 'capture-*.log' -File |
   Where-Object LastWriteTime -lt (Get-Date).AddDays(-14) |
   Remove-Item -Force
-Start-Transcript -LiteralPath $logPath | Out-Null
+$mutex = New-Object System.Threading.Mutex($false, 'Global\BitGovCaptureRunner')
+if (-not $mutex.WaitOne(0)) { return }
 
 try {
+Start-Transcript -LiteralPath $logPath | Out-Null
 
 foreach ($name in 'DATA_GO_TH_API_KEY','INGESTION_CONTROL_TOKEN','INGESTION_WORKER_URL') {
   $value = [Environment]::GetEnvironmentVariable($name, 'User')
@@ -33,7 +38,7 @@ $deadline = (Get-Date).AddMinutes($WindowMinutes)
 
 function Invoke-NormalizationSlice {
   $env:NORMALIZE_BATCH_SIZE = '100'
-  $env:NORMALIZE_MAX_ROWS = '50000'
+  $env:NORMALIZE_MAX_ROWS = [string]$NormalizeMaxRows
   $env:NORMALIZE_INPUT = 'r2'
   node scripts/normalize-next-capture.mjs
   if ($LASTEXITCODE -ne 0) { throw "Normalization runner stopped with exit code $LASTEXITCODE" }
@@ -47,4 +52,6 @@ while ((Get-Date) -lt $deadline) {
 }
 } finally {
   Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+  $mutex.ReleaseMutex()
+  $mutex.Dispose()
 }
