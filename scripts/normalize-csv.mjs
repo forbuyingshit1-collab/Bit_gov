@@ -103,7 +103,8 @@ async function submit(records) {
       body: JSON.stringify({ runId, fiscalYear, resourceId, sourceVersion, records }),
     });
     if (response.ok) return response.json();
-    lastError = new Error(`normalization endpoint returned HTTP ${response.status}`);
+    const detail = (await response.text()).replace(/\s+/g, " ").slice(0, 180);
+    lastError = new Error(`normalization endpoint returned HTTP ${response.status}: ${detail}`);
     if (response.status < 500 || attempt === 3) break;
     await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
   }

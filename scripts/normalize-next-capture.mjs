@@ -18,7 +18,7 @@ if (!next) {
 
 const [key, entry] = next;
 const result = spawnSync(process.execPath, ["scripts/normalize-csv.mjs"], {
-  stdio: "inherit",
+  encoding: "utf8",
   env: {
     ...process.env,
     CAPTURE_RUN_ID: entry.runId,
@@ -29,7 +29,16 @@ const result = spawnSync(process.execPath, ["scripts/normalize-csv.mjs"], {
     NORMALIZE_INPUT: process.env.NORMALIZE_INPUT ?? "r2",
   },
 });
-if (result.status !== 0) process.exit(result.status ?? 1);
+process.stdout.write(result.stdout ?? "");
+process.stderr.write(result.stderr ?? "");
+if (result.status !== 0) {
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  if (output.includes("free tier daily row write limit")) {
+    console.warn(JSON.stringify({ runId: entry.runId, deferred: "d1_daily_write_limit" }));
+    process.exit(75);
+  }
+  process.exit(result.status ?? 1);
+}
 
 const normalization = await readJson(normalizationPath, {});
 if (!normalization[entry.runId]) {

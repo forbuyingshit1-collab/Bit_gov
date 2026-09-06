@@ -41,11 +41,17 @@ function Invoke-NormalizationSlice {
   $env:NORMALIZE_MAX_ROWS = [string]$NormalizeMaxRows
   $env:NORMALIZE_INPUT = 'r2'
   node scripts/normalize-next-capture.mjs
+  if ($LASTEXITCODE -eq 75) {
+    Write-Warning 'D1 daily write limit reached; deferring this slice until quota resets.'
+    return $false
+  }
   if ($LASTEXITCODE -ne 0) { throw "Normalization runner stopped with exit code $LASTEXITCODE" }
+  return $true
 }
 
 while ((Get-Date) -lt $deadline) {
-  Invoke-NormalizationSlice
+  $canWrite = Invoke-NormalizationSlice
+  if (-not $canWrite) { break }
   node scripts/seed-catalog.mjs
   if ($LASTEXITCODE -ne 0) { throw "Capture runner stopped with exit code $LASTEXITCODE" }
   Start-Sleep -Seconds $PauseSeconds
