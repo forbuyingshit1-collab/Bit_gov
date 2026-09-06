@@ -7,7 +7,7 @@ import { createHash, randomUUID } from "node:crypto";
 const apiKey = process.env.DATA_GO_TH_API_KEY;
 const controlToken = process.env.INGESTION_CONTROL_TOKEN;
 const workerUrl = process.env.INGESTION_WORKER_URL;
-const years = (process.env.FISCAL_YEARS ?? "2565:2568").split(":").map(Number);
+const years = (process.env.FISCAL_YEARS ?? "2565:2569").split(":").map(Number);
 const resourceLimit = Number(process.env.RESOURCE_LIMIT ?? Number.MAX_SAFE_INTEGER);
 const captureBytes = Number(process.env.CAPTURE_BYTES ?? 1 * 1024 * 1024);
 const maxChunks = Number(process.env.MAX_CHUNKS ?? 1);
@@ -17,7 +17,7 @@ const statePath = process.env.CAPTURE_STATE_PATH ?? ".bit-gov-capture-state.json
 const completedStatePath = process.env.COMPLETED_CAPTURE_STATE_PATH ?? ".bit-gov-completed-captures.json";
 
 if (!apiKey || !controlToken || !workerUrl || years.length !== 2 || years.some((year) => !Number.isInteger(year))) {
-  throw new Error("Set DATA_GO_TH_API_KEY, INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL and FISCAL_YEARS=2565:2568");
+  throw new Error("Set DATA_GO_TH_API_KEY, INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL and FISCAL_YEARS=2565:2569");
 }
 
 const titleFor = (year) => `ข้อมูลโครงการจัดซื้อจัดจ้างจากระบบการจัดซื้อจัดจ้างภาครัฐ ปีงบประมาณ ${year}`;

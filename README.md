@@ -17,6 +17,6 @@
 
 ## Status
 
-Phase 1: staging ingestion กำลังทำงาน. Dashboard, PIN login, API Worker, ingestion Worker, D1, R2 และ Windows daily resume เชื่อมครบแล้ว ขณะนี้กำลังเก็บ raw source ปี 2565–2568 แบบ resumable ก่อน normalize; ปี 2569 รายงานว่า source ยังไม่พร้อมตามจริง
+Phase 1: staging ingestion กำลังทำงาน. Dashboard, PIN login, API Worker, ingestion Worker, D1, R2 และ Windows daily resume เชื่อมครบแล้ว ขณะนี้กำลังเก็บ raw source ปี 2565–2569 แบบ resumable ก่อน normalize; ปี 2569 รายงานว่า source ยังไม่พร้อมตามจริงหาก catalog ยังไม่เผยแพร่ชุดข้อมูล
 
 อ่าน [Architecture decisions](docs/architecture/decisions.md), [Bootstrap runbook](docs/runbooks/bootstrap.md) และ [Daily ingestion runbook](docs/runbooks/daily-ingestion.md) ก่อนดูแลระบบ
