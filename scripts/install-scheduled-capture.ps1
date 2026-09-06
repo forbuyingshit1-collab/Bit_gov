@@ -29,6 +29,7 @@ Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Se
 $backfillTrigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
   -RepetitionInterval (New-TimeSpan -Minutes 5) `
   -RepetitionDuration (New-TimeSpan -Days 31)
+$backfillAction = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -WindowMinutes 10 -NormalizeMaxRows 5000" -WorkingDirectory $root
 $backfillSettings = New-ScheduledTaskSettingsSet `
   -AllowStartIfOnBatteries `
   -DontStopIfGoingOnBatteries `
@@ -36,9 +37,9 @@ $backfillSettings = New-ScheduledTaskSettingsSet `
   -RunOnlyIfNetworkAvailable `
   -WakeToRun `
   -DontStopOnIdleEnd `
-  -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
+  -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
   -MultipleInstances IgnoreNew `
   -RestartCount 3 `
   -RestartInterval (New-TimeSpan -Minutes 1)
-Register-ScheduledTask -TaskName $BackfillTaskName -Action $action -Trigger $backfillTrigger -Settings $backfillSettings -Description 'Short resumable Bit Gov backfill slices; safe to restart after interruption.' -Force | Out-Null
+Register-ScheduledTask -TaskName $BackfillTaskName -Action $backfillAction -Trigger $backfillTrigger -Settings $backfillSettings -Description 'Resumable Bit Gov backfill slices with sufficient time for catalog retry and normalization.' -Force | Out-Null
 Get-ScheduledTask -TaskName $TaskName, $BackfillTaskName | Select-Object TaskName, State
