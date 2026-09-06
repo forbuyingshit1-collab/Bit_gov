@@ -24,11 +24,31 @@ const titleFor = (year) => `ข้อมูลโครงการจัดซ�
 async function ckan(action, params) {
   const url = new URL(`https://opend.data.go.th/get-ckan/${action}`);
   for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-  const response = await fetch(url, { headers: { "api-key": apiKey, accept: "application/json" } });
-  if (!response.ok) throw new Error(`${action} returned HTTP ${response.status}`);
-  const payload = await response.json();
-  if (!payload.success) throw new Error(`${action} returned success=false`);
-  return payload.result;
+  let lastError;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: { "api-key": apiKey, accept: "application/json" },
+        signal: AbortSignal.timeout(30000),
+      });
+      if (!response.ok) {
+        if (response.status < 429 || (response.status < 500 && response.status !== 429)) {
+          throw new Error(`${action} returned HTTP ${response.status}`);
+        }
+        lastError = new Error(`${action} returned HTTP ${response.status}`);
+      } else {
+        const payload = await response.json();
+        if (!payload.success) throw new Error(`${action} returned success=false`);
+        return payload.result;
+      }
+    } catch (error) {
+      lastError = error;
+      const message = String(error?.message ?? error);
+      if (/returned HTTP [1-3]\d\d|returned HTTP 4(?!29)/.test(message)) throw error;
+    }
+    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+  }
+  throw lastError;
 }
 
 async function seed(payload) {
