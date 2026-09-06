@@ -7,7 +7,7 @@
     ".": "./src/index.js"
   },
   "scripts": {
-    "check": "node --check src/ckan.js && node --check src/raw.js",
+    "check": "node --check src/ckan.js && node --check src/raw.js && node --check src/csv-schema.js",
     "test": "node --test"
   }
 }

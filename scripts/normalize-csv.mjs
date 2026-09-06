@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import { readFile, writeFile } from "node:fs/promises";
+import { repairCsvHeaders } from "../packages/ingestion/src/index.js";
 
 const controlToken = process.env.INGESTION_CONTROL_TOKEN;
 const workerUrl = process.env.INGESTION_WORKER_URL;
@@ -17,13 +18,13 @@ if (!controlToken || !workerUrl || !sourceUrl || !runId || !resourceId || !sourc
 }
 if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) throw new Error("NORMALIZE_BATCH_SIZE must be 1..100");
 
-async function* csvRows(body) {
+async function* csvRows(chunks) {
   const decoder = new TextDecoder("utf-8");
   let field = "";
   let row = [];
   let inQuotes = false;
   let pendingQuote = false;
-  for await (const chunk of Readable.fromWeb(body)) {
+  for await (const chunk of chunks) {
     const text = decoder.decode(chunk, { stream: true });
     for (let index = 0; index < text.length; index += 1) {
       let character = text[index];
@@ -50,6 +51,47 @@ async function* csvRows(body) {
   if (tail) field += tail;
   if (inQuotes || pendingQuote) throw new Error("CSV ended inside a quoted field");
   if (field.length || row.length) { row.push(field); yield row; }
+}
+
+async function sourceCsvChunks() {
+  const response = await fetch(sourceUrl);
+  if (!response.ok || !response.body) throw new Error(`source CSV returned HTTP ${response.status}`);
+  return Readable.fromWeb(response.body);
+}
+
+function rangeFromKey(key) {
+  const match = /bytes-(\d+)-(\d+)\.csv$/.exec(key ?? "");
+  if (!match) throw new Error("Raw manifest contains an invalid chunk key");
+  return { start: Number(match[1]), end: Number(match[2]) };
+}
+
+async function* r2CsvChunks() {
+  const manifestUrl = new URL(`${workerUrl.replace(/\/$/, "")}/internal/raw-csv-manifest`);
+  manifestUrl.searchParams.set("fiscalYear", String(fiscalYear));
+  manifestUrl.searchParams.set("resourceId", resourceId);
+  manifestUrl.searchParams.set("sourceVersion", sourceVersion);
+  const manifestResponse = await fetch(manifestUrl, { headers: { authorization: `Bearer ${controlToken}` } });
+  if (!manifestResponse.ok) throw new Error(`raw manifest returned HTTP ${manifestResponse.status}`);
+  const manifest = await manifestResponse.json();
+  if (!Array.isArray(manifest.chunks) || manifest.chunks.length === 0) throw new Error("Raw manifest has no chunks");
+  const chunks = manifest.chunks.map((item) => ({ ...item, ...rangeFromKey(item.key) })).sort((left, right) => left.start - right.start);
+  let expectedStart = 0;
+  for (const chunk of chunks) {
+    if (chunk.start !== expectedStart) throw new Error("Raw manifest has a gap or overlapping chunks");
+    const chunkUrl = new URL(`${workerUrl.replace(/\/$/, "")}/internal/raw-csv-chunk`);
+    chunkUrl.searchParams.set("fiscalYear", String(fiscalYear));
+    chunkUrl.searchParams.set("resourceId", resourceId);
+    chunkUrl.searchParams.set("sourceVersion", sourceVersion);
+    chunkUrl.searchParams.set("rangeStart", String(chunk.start));
+    chunkUrl.searchParams.set("rangeEnd", String(chunk.end));
+    const response = await fetch(chunkUrl, { headers: { authorization: `Bearer ${controlToken}` } });
+    if (!response.ok) throw new Error(`raw chunk returned HTTP ${response.status}`);
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (bytes.byteLength !== chunk.end - chunk.start + 1) throw new Error("Raw chunk length does not match its manifest");
+    expectedStart = chunk.end + 1;
+    yield bytes;
+  }
+  if (expectedStart !== manifest.totalBytes) throw new Error("Raw manifest total length does not match its chunks");
 }
 
 async function submit(records) {
@@ -87,8 +129,6 @@ async function writeState(state) {
   await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-const response = await fetch(sourceUrl);
-if (!response.ok || !response.body) throw new Error(`source CSV returned HTTP ${response.status}`);
 const state = await readState();
 const resumeFrom = Number(state[runId]?.processedRows ?? 0);
 let headers;
@@ -97,10 +137,12 @@ let rowCount = 0;
 let acceptedCount = 0;
 let duplicateCount = 0;
 let quarantineCount = 0;
-for await (const row of csvRows(response.body)) {
+const input = process.env.NORMALIZE_INPUT === "r2" ? r2CsvChunks() : await sourceCsvChunks();
+for await (const row of csvRows(input)) {
   if (!headers) { headers = row.map((value) => value.replace(/^\uFEFF/, "").trim()); continue; }
   rowCount += 1;
   if (rowCount <= resumeFrom) continue;
+  headers = repairCsvHeaders(headers, row.length);
   batch.push(row.length === headers.length
     ? Object.fromEntries(headers.map((header, index) => [header, row[index]]))
     : { _ingestion_parse_error: "csv_column_count_mismatch", _source_row_number: String(rowCount) });

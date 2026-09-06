@@ -15,7 +15,7 @@
     "test": "npm run test --workspaces --if-present",
     "build": "npm run build --workspaces --if-present",
     "cf:whoami": "wrangler whoami",
-    "db:migrate:staging": "wrangler d1 migrations apply bit-gov-staging --remote --config apps/api-worker/wrangler.toml"
+    "db:migrate:staging": "wrangler d1 migrations apply bit-gov-v2-staging --remote --config apps/api-worker/wrangler.toml"
   },
   "devDependencies": {
     "wrangler": "^4.129.0"

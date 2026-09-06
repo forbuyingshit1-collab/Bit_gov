@@ -9,6 +9,7 @@ import {
 const SOURCE_ID = "data-go-th-ckan";
 // 8 MiB timed out through the authenticated Worker path in staging; 1 MiB was verified end-to-end.
 const DEFAULT_CSV_CHUNK_BYTES = 1 * 1024 * 1024;
+const MAX_RAW_READ_BYTES = 8 * 1024 * 1024;
 
 function validatedResourceUrl(value) {
   const url = new URL(value);
@@ -327,6 +328,85 @@ function csvManifestKey({ fiscalYear, resourceId, sourceVersion }) {
   return `raw/source-csv/${fiscalYear}/${resourceId}/${version}/manifest.json`;
 }
 
+function rawChunkRange(key) {
+  const match = /bytes-(\d+)-(\d+)\.csv$/.exec(key ?? "");
+  if (!match) throw new Error("Raw capture manifest contains an invalid chunk key");
+  return { start: Number(match[1]), end: Number(match[2]) };
+}
+
+export function contiguousRawChunks(chunks, totalBytes) {
+  const parsed = chunks.map((chunk) => ({ ...chunk, ...rawChunkRange(chunk.key) }));
+  const byStart = new Map();
+  for (const chunk of parsed) {
+    const current = byStart.get(chunk.start);
+    if (!current || chunk.end > current.end) byStart.set(chunk.start, chunk);
+  }
+  const result = [];
+  let expectedStart = 0;
+  while (expectedStart < totalBytes) {
+    const chunk = byStart.get(expectedStart);
+    if (!chunk || chunk.end < chunk.start || chunk.end >= totalBytes) {
+      throw new Error("Raw capture manifest has a gap, invalid range, or does not cover its declared length");
+    }
+    result.push(chunk);
+    expectedStart = chunk.end + 1;
+  }
+  return result.map(({ start, end, ...chunk }) => chunk);
+}
+
+async function loadRawManifest({ fiscalYear, resourceId, sourceVersion }, env) {
+  const object = await env.RAW_BUCKET.get(csvManifestKey({ fiscalYear, resourceId, sourceVersion }));
+  if (!object) return null;
+  const manifest = await object.json();
+  if (
+    manifest?.schemaVersion !== 1
+    || manifest.resourceId !== resourceId
+    || Number(manifest.fiscalYear) !== fiscalYear
+    || manifest.sourceVersion !== sourceVersion
+    || !Number.isSafeInteger(manifest.totalBytes)
+    || !Array.isArray(manifest.chunks)
+  ) throw new Error("Raw capture manifest is invalid");
+  return { ...manifest, chunks: contiguousRawChunks(manifest.chunks, manifest.totalBytes) };
+}
+
+async function rehydrateRawCapture(body, env) {
+  const fiscalYear = Number(body?.fiscalYear);
+  const resource = body?.resource;
+  assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+  if (!resource || typeof resource.id !== "string") throw new Error("resource id is required");
+  const resourceUrl = validatedResourceUrl(resource.url);
+  const sourceVersion = resource.last_modified || resource.hash || "unknown";
+  const manifest = await loadRawManifest({ fiscalYear, resourceId: resource.id, sourceVersion }, env);
+  if (!manifest) throw new Error("Raw capture manifest was not found");
+
+  const now = new Date().toISOString();
+  const resourceDbId = `ckan:${resource.id}`;
+  const runId = crypto.randomUUID();
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO sources (id, name, source_type, base_url, enabled, created_at)
+       VALUES (?, ?, 'ckan', ?, 1, ?)
+       ON CONFLICT(id) DO UPDATE SET enabled = 1`,
+    ).bind(SOURCE_ID, "Data.go.th CKAN", "https://opend.data.go.th/get-ckan", now),
+    env.DB.prepare(
+      `INSERT INTO source_resources
+         (id, source_id, external_id, fiscal_year, resource_url, source_last_modified,
+          checksum, schema_fingerprint, first_seen_at, last_seen_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+       ON CONFLICT(source_id, external_id) DO UPDATE SET
+         fiscal_year = excluded.fiscal_year, resource_url = excluded.resource_url,
+         source_last_modified = excluded.source_last_modified, checksum = excluded.checksum,
+         last_seen_at = excluded.last_seen_at`,
+    ).bind(resourceDbId, SOURCE_ID, resource.id, fiscalYear, resourceUrl, resource.last_modified ?? null, resource.hash || null, now, now),
+    env.DB.prepare(
+      `INSERT INTO sync_runs (id, resource_id, run_type, status, started_at, finished_at,
+        source_count, accepted_count, duplicate_count, quarantine_count, checkpoint, total_bytes)
+       VALUES (?, ?, 'local_raw_capture', 'succeeded', ?, ?, 0, 0, 0, 0, ?, ?)`,
+    ).bind(runId, resourceDbId, now, now, String(manifest.totalBytes), manifest.totalBytes),
+  ]);
+  return { runId, fiscalYear, resourceId: resource.id, sourceVersion, totalBytes: manifest.totalBytes, chunks: manifest.chunks.length };
+}
+
 async function handleCaptureCsvRange(message, env) {
   assertInteger(message.rangeStart, "rangeStart");
   assertInteger(message.chunkBytes, "chunkBytes", { min: 1, max: DEFAULT_CSV_CHUNK_BYTES });
@@ -416,8 +496,13 @@ async function ingestNormalizedRecords({ runId, fiscalYear, resourceId, sourceVe
     if (normalized.error) {
       quarantineCount += 1;
       statements.push(env.DB.prepare(
-        `INSERT OR IGNORE INTO ingestion_errors (id, sync_run_id, resource_id, source_record_id, fingerprint, stage, reason_code, detail, created_at)
-         VALUES (?, ?, ?, ?, ?, 'normalize', ?, NULL, ?)`,
+        `INSERT INTO ingestion_errors (id, sync_run_id, resource_id, source_record_id, fingerprint, stage, reason_code, detail, created_at)
+         VALUES (?, ?, ?, ?, ?, 'normalize', ?, NULL, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           reason_code = excluded.reason_code,
+           detail = excluded.detail,
+           created_at = excluded.created_at,
+           resolved_at = NULL`,
       ).bind(`error:${fingerprint}`, runId, resourceDbId, String(record._id ?? record["ลำดับ"] ?? ""), fingerprint, normalized.error, observedAt));
       continue;
     }
@@ -714,6 +799,60 @@ export default {
         return Response.json(await confirmDirectCsvUpload(await request.json(), env));
       } catch (error) {
         return Response.json({ error: "direct_confirmation_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
+    }
+
+    if (request.method === "POST" && url.pathname === "/internal/rehydrate-raw-capture") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        return Response.json(await rehydrateRawCapture(await request.json(), env), { status: 201 });
+      } catch (error) {
+        return Response.json({ error: "rehydration_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/internal/raw-csv-manifest") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        const fiscalYear = Number(url.searchParams.get("fiscalYear"));
+        const resourceId = url.searchParams.get("resourceId");
+        const sourceVersion = url.searchParams.get("sourceVersion");
+        if (!resourceId || !sourceVersion) throw new Error("resource_id_and_source_version_required");
+        assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+        const manifest = await loadRawManifest({ fiscalYear, resourceId, sourceVersion }, env);
+        if (!manifest) return Response.json({ error: "not_found" }, { status: 404 });
+        return Response.json(manifest, { headers: { "cache-control": "no-store" } });
+      } catch (error) {
+        return Response.json({ error: "raw_manifest_failed", detail: String(error).slice(0, 180) }, { status: 400 });
+      }
+    }
+
+    if (request.method === "GET" && url.pathname === "/internal/raw-csv-chunk") {
+      const authorized = await secureTokenEqual(
+        request.headers.get("authorization")?.replace(/^Bearer\s+/i, ""), env.INGESTION_CONTROL_TOKEN,
+      );
+      if (!authorized) return Response.json({ error: "unauthorized" }, { status: 401 });
+      try {
+        const fiscalYear = Number(url.searchParams.get("fiscalYear"));
+        const resourceId = url.searchParams.get("resourceId");
+        const sourceVersion = url.searchParams.get("sourceVersion");
+        const rangeStart = Number(url.searchParams.get("rangeStart"));
+        const rangeEnd = Number(url.searchParams.get("rangeEnd"));
+        if (!resourceId || !sourceVersion) throw new Error("resource_id_and_source_version_required");
+        assertInteger(fiscalYear, "fiscalYear", { min: 2500, max: 3000 });
+        assertInteger(rangeStart, "rangeStart");
+        assertInteger(rangeEnd, "rangeEnd", { min: rangeStart, max: rangeStart + MAX_RAW_READ_BYTES - 1 });
+        const object = await env.RAW_BUCKET.get(csvChunkKey({ fiscalYear, resourceId, sourceVersion }, rangeStart, rangeEnd));
+        if (!object) return Response.json({ error: "not_found" }, { status: 404 });
+        return new Response(object.body, { headers: { "content-type": "text/csv", "cache-control": "no-store" } });
+      } catch (error) {
+        return Response.json({ error: "raw_chunk_failed", detail: String(error).slice(0, 180) }, { status: 400 });
       }
     }
 

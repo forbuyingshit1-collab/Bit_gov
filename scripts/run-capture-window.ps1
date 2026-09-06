@@ -32,27 +32,11 @@ $env:CHUNK_DELAY_MS = '15000'
 $deadline = (Get-Date).AddMinutes($WindowMinutes)
 
 function Invoke-NormalizationSlice {
-  $completedPath = Join-Path $root '.bit-gov-completed-captures.json'
-  if (-not (Test-Path $completedPath)) { return }
-  $completed = Get-Content -Raw $completedPath | ConvertFrom-Json
-  $next = $completed.psobject.Properties | Where-Object { -not $_.Value.normalizedAt } | Select-Object -First 1
-  if ($null -eq $next) { return }
-  $entry = $next.Value
-  $env:CAPTURE_RUN_ID = $entry.runId
-  $env:RESOURCE_ID = $entry.resourceId
-  $env:FISCAL_YEAR = [string]$entry.fiscalYear
-  $env:SOURCE_VERSION = $entry.sourceVersion
-  $env:SOURCE_CSV_URL = $entry.sourceUrl
   $env:NORMALIZE_BATCH_SIZE = '100'
   $env:NORMALIZE_MAX_ROWS = '50000'
-  node scripts/normalize-csv.mjs
+  $env:NORMALIZE_INPUT = 'r2'
+  node scripts/normalize-next-capture.mjs
   if ($LASTEXITCODE -ne 0) { throw "Normalization runner stopped with exit code $LASTEXITCODE" }
-  $normalizationPath = Join-Path $root '.bit-gov-normalization-state.json'
-  $normalization = if (Test-Path $normalizationPath) { Get-Content -Raw $normalizationPath | ConvertFrom-Json } else { [pscustomobject]@{} }
-  if ($normalization.psobject.Properties.Name -notcontains $entry.runId) {
-    $next.Value.normalizedAt = (Get-Date).ToUniversalTime().ToString('o')
-    $completed | ConvertTo-Json -Depth 8 | Set-Content -NoNewline $completedPath
-  }
 }
 
 while ((Get-Date) -lt $deadline) {
