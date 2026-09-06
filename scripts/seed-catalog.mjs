@@ -16,9 +16,13 @@ const chunkDelayMs = Number(process.env.CHUNK_DELAY_MS ?? 15000);
 const statePath = process.env.CAPTURE_STATE_PATH ?? ".bit-gov-capture-state.json";
 const completedStatePath = process.env.COMPLETED_CAPTURE_STATE_PATH ?? ".bit-gov-completed-captures.json";
 const discoveryOnly = process.env.DISCOVERY_ONLY === "1";
+const localUpload = process.env.LOCAL_UPLOAD === "1";
 
 if (!apiKey || !controlToken || !workerUrl || years.length !== 2 || years.some((year) => !Number.isInteger(year))) {
   throw new Error("Set DATA_GO_TH_API_KEY, INGESTION_CONTROL_TOKEN, INGESTION_WORKER_URL and FISCAL_YEARS=2565:2569");
+}
+if (!discoveryOnly && !localUpload) {
+  throw new Error("Set LOCAL_UPLOAD=1 for capture; use DISCOVERY_ONLY=1 to inspect the public catalog without writing raw data");
 }
 
 const titleFor = (year) => `ข้อมูลโครงการจัดซื้อจัดจ้างจากระบบการจัดซื้อจัดจ้างภาครัฐ ปีงบประมาณ ${year}`;
@@ -175,7 +179,7 @@ async function writeCompletedCaptureState(state) {
   await writeFile(completedStatePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
 }
 
-const initialState = process.env.LOCAL_UPLOAD === "1" ? await readCaptureState() : {};
+const initialState = localUpload ? await readCaptureState() : {};
 const activeResourceId = Object.keys(initialState)[0]?.split(":")[1] ?? process.env.RESOURCE_ID ?? null;
 let remainingResources = resourceLimit;
 const fiscalYears = Array.from({ length: years[1] - years[0] + 1 }, (_, index) => years[1] - index);
@@ -217,7 +221,7 @@ catalog: for (const fiscalYear of fiscalYears) {
   }
   const resources = activeResourceId ? discoveredResources.filter((resource) => resource.id === activeResourceId) : discoveredResources;
   for (const resource of resources) {
-    if (process.env.LOCAL_UPLOAD === "1") {
+    if (localUpload) {
       const state = await readCaptureState();
       const stateKey = `${fiscalYear}:${resource.id}:${resource.last_modified || resource.hash || "unknown"}`;
       const previous = state[stateKey];

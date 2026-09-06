@@ -437,6 +437,10 @@ async function rehydrateRawCapture(body, env) {
 async function handleCaptureCsvRange(message, env) {
   assertInteger(message.rangeStart, "rangeStart");
   assertInteger(message.chunkBytes, "chunkBytes", { min: 1, max: DEFAULT_CSV_CHUNK_BYTES });
+  const run = await env.DB.prepare("SELECT status FROM sync_runs WHERE id = ?").bind(message.runId).first();
+  if (!run || run.status !== "running") {
+    return { skipped: true, reason: run ? `run_${run.status}` : "run_not_found" };
+  }
   const rangeEnd = message.rangeStart + message.chunkBytes - 1;
   const response = await fetch(validatedResourceUrl(message.resourceUrl), {
     headers: { range: `bytes=${message.rangeStart}-${rangeEnd}` },
