@@ -36,17 +36,26 @@ $env:RESOURCE_LIMIT = '1'
 $env:CHUNK_DELAY_MS = '15000'
 $deadline = (Get-Date).AddMinutes($WindowMinutes)
 
+# Shard migration is deliberately explicit: raw capture continues, but normalizing
+# into the single legacy v2 database is paused so it does not grow into a dead end.
+$shardMigrationMarker = Join-Path $root '.bit-gov-shard-migration-required'
+if (Test-Path -LiteralPath $shardMigrationMarker) {
+  Write-Warning 'Shard migration is active; raw R2 capture continues and single-database normalization is paused.'
+  $normalizationAllowed = $false
+} else {
+  $normalizationAllowed = $false
+}
+
 # Leave headroom below D1's per-database limit. Raw R2 capture can continue while
 # the normalized database layout is expanded; never fill D1 blindly.
-$normalizationAllowed = $false
-try {
+if (-not (Test-Path -LiteralPath $shardMigrationMarker)) { try {
   $capacityJson = node node_modules/wrangler/bin/wrangler.js d1 info bit-gov-v2-staging --config apps/ingestion-worker/wrangler.toml --json
   if ($LASTEXITCODE -ne 0) { throw 'D1 capacity query failed' }
   $capacity = ($capacityJson -join "`n") | ConvertFrom-Json
   if ($null -eq $capacity.database_size) { throw 'D1 capacity response missing size' }
   $normalizationAllowed = [long]$capacity.database_size -lt 8000000000
   if (-not $normalizationAllowed) { Write-Warning 'Normalization deferred at 8 GB safety threshold; raw R2 capture continues. Database partitioning is required.' }
-} catch { Write-Warning 'Cannot verify D1 capacity; deferring normalization this slice, continuing raw capture.' }
+} catch { Write-Warning 'Cannot verify D1 capacity; deferring normalization this slice, continuing raw capture.' } }
 
 $catalogStamp = Join-Path $root '.bit-gov-catalog-check-date'
 $today = Get-Date -Format 'yyyy-MM-dd'
