@@ -23,7 +23,8 @@ Do not run database migrations, start ingestion or deploy production before reso
 
 ## Staging resource status
 
-- D1 `bit-gov-staging`: created and migrated through `0003_capture_progress.sql`; capture checkpoint and total-byte coverage are exposed by the API
+- D1 `bit-gov-staging`: retained read-only as the pre-rebuild rollback database
+- D1 `bit-gov-v2-staging`: created and migrated through `0003_capture_progress.sql`; this is the parallel rebuild target
 - Queue `bit-gov-ingestion-staging`: created and bound to the deployed ingestion consumer
 - R2 `bit-gov-raw-staging`: created 4 September 2026; ingestion binding configured
 - API Worker `bit-gov-api-staging`: deployed and smoke-tested through all public read endpoints
@@ -34,6 +35,6 @@ Do not run database migrations, start ingestion or deploy production before reso
 - Source probe: CKAN API is blocked from Cloudflare and Vercel (HTTP 403), while direct CSV range download succeeds (HTTP 206)
 - Local acquisition bridge: `scripts/seed-catalog.mjs` discovers resources using the Data.go API-key gateway, downloads one bounded range into the operating-system temporary directory, uploads it directly to R2, removes it immediately, and asks the Worker to verify the actual bytes before moving the checkpoint. Only gitignored resume metadata persists locally.
 - Windows task `BitGov-OvernightCapture`: active daily at 01:30, starts after a missed schedule, waits for network, runs on battery, wakes the computer when permitted, and retries transient process failures. Install or repair it with `scripts/install-scheduled-capture.ps1`.
-- Bulk capture: FY2568 is actively resuming. Normalized project counts remain zero until the first immutable source manifest is complete; Dashboard communicates this distinction explicitly.
+- Bulk capture: FY2568 resource 1 is immutable in R2 (626,564,320 bytes) and has been rehydrated into D1 v2 without downloading it again. The normalizer reads a contiguous, checksum-backed path from R2; the official CSV's missing district/subdistrict headers are repaired by an explicit source-specific mapping before validation.
 
 The checked-in Wrangler configuration contains resource IDs only. It must never contain an API token, source API key, PIN, or PIN hash.

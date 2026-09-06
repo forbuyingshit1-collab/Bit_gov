@@ -7,9 +7,9 @@
 3. Vercel ใหม่ใช้สำหรับ Dashboard และ PIN Login
 4. Cloudflare Workers Paid ใช้สำหรับ API และ ingestion
 5. R2 เก็บข้อมูลดิบทั่วประเทศ ทุกหมวด ตั้งแต่ปี 2565 ถึงปีล่าสุดที่ต้นทางมี แบบ immutable
-6. D1 เก็บ normalized data และ analytics; Dashboard เรียกผ่าน Worker API เท่านั้น
+6. R2 เก็บข้อมูลดิบทั้งหมด; D1 เก็บดัชนี normalized สำหรับทุกโครงการและ analytics เฉพาะหมวดที่อนุมัติแล้ว; Dashboard เรียกผ่าน Worker API เท่านั้น
 7. แยก staging และ production ทุก resource
-8. Daily sync เวลา 06:00 และ weekly reconciliation วันอาทิตย์ 02:00 `Asia/Bangkok`
+8. Daily sync เวลา 01:30 และ weekly reconciliation วันอาทิตย์ 02:00 `Asia/Bangkok`
 9. Raw objects และ manifest/checksum เก็บถาวร; daily snapshots 30 วัน; month-end snapshots 12 เดือน
 10. แจ้งเตือนผ่าน Dashboard และอีเมล
 11. รันระบบเก่าและใหม่คู่กันอย่างน้อย 7 วัน และเก็บระบบเก่า read-only 30 วันหลัง cutover
@@ -33,7 +33,7 @@
 | Vercel | `bit-gov-dashboard` | Preview deployments |
 | API Worker | `bit-gov-api` | `bit-gov-api-staging` |
 | Ingestion Worker | `bit-gov-ingestion` | `bit-gov-ingestion-staging` |
-| D1 | `bit-gov-prod` | `bit-gov-staging` |
+| D1 | `bit-gov-prod` | `bit-gov-v2-staging` (rebuild), `bit-gov-staging` (rollback) |
 | R2 | `bit-gov-raw-prod` | `bit-gov-raw-staging` |
 
 ## Security invariants
